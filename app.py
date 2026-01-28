@@ -6,54 +6,26 @@ import random
 # --- GRUNDINSTÄLLNINGAR ---
 st.set_page_config(page_title="InstrumentDB", layout="wide")
 
-# --- ROBUST ANSLUTNINGSFUNKTION ---
+# --- DEN ENKLASTE MÖJLIGA ANSLUTNINGEN ---
 def get_robust_connection():
     try:
-        if "connections" not in st.secrets or "gsheets" not in st.secrets["connections"]:
-            st.error("Hittar inga Secrets. Kontrollera Streamlit Cloud.")
-            return None, None
-            
-        conf = st.secrets["connections"]["gsheets"].to_dict()
-        
-        # 1. Extrahera spreadsheet URL
-        sheet_url = conf.get("spreadsheet")
-        
-        # 2. Bygg ett super-rent inloggnings-objekt
-        # Vi inkluderar ENDAST det Google behöver för att identifiera dig
-        # Vi tar bort 'type' helt härifrån eftersom det skickas separat i st.connection
-        creds = {
-            "client_email": conf.get("client_email"),
-        }
-        
-        # 3. Fixa Private Key
-        raw_key = conf.get("private_key", "")
-        clean_content = raw_key.replace("-----BEGIN PRIVATE KEY-----", "") \
-                               .replace("-----END PRIVATE KEY-----", "") \
-                               .replace("\\n", "\n").replace("\n", "").replace(" ", "").strip()
-        
-        lines = [clean_content[i:i+64] for i in range(0, len(clean_content), 64)]
-        creds["private_key"] = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(lines) + "\n-----END PRIVATE KEY-----\n"
-        
-        # Lägg till project_id bara om det behövs (vissa versioner kräver det)
-        if conf.get("project_id"):
-            creds["project_id"] = conf.get("project_id")
-
-        # 4. Skapa anslutningen
-        # Notera: Vi skickar INTE 'type' inuti **creds nu, bara i det första argumentet
-        connection = st.connection("gsheets", type=GSheetsConnection, **creds)
-        return connection, sheet_url
+        # Vi skapar anslutningen helt utan extra argument.
+        # Biblioteket kommer nu leta direkt i st.secrets["connections"]["gsheets"]
+        # och förvänta sig att allt finns där i rätt format.
+        return st.connection("gsheets", type=GSheetsConnection)
     except Exception as e:
-        st.session_state.error_log = f"Konfigurationsfel: {e}"
-        return None, None
+        st.session_state.error_log = f"Anslutningsfel: {e}"
+        return None
 
-# Starta anslutningen
-conn, spreadsheet_url = get_robust_connection()
+conn = get_robust_connection()
 
 # --- DATAFUNKTIONER ---
 def load_data():
-    if conn and spreadsheet_url:
+    if conn:
         try:
-            return conn.read(spreadsheet=spreadsheet_url, ttl="0s")
+            # Vi hämtar URL:en direkt från secrets för att använda i read-kommandot
+            url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+            return conn.read(spreadsheet=url, ttl="0s")
         except Exception as e:
             st.session_state.error_log = f"Läsfel: {e}"
     return pd.DataFrame(columns=["Modell", "Tillverkare", "Resurstagg", "Status", "Aktuell ägare"])
@@ -103,7 +75,8 @@ elif menu == "➕ Lägg till (Kamera)":
                 st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_row])], ignore_index=True)
                 if conn:
                     try:
-                        conn.update(spreadsheet=spreadsheet_url, data=st.session_state.df)
+                        url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+                        conn.update(spreadsheet=url, data=st.session_state.df)
                         st.success(f"Sparade {m}!")
                         st.rerun()
                     except Exception as e:
@@ -119,7 +92,8 @@ elif menu == "🛒 Lånekorg":
             for item in st.session_state.cart:
                 st.session_state.df.loc[st.session_state.df['Resurstagg'] == item['Resurstagg'], ['Status', 'Aktuell ägare']] = ['Utlånad', namn]
             if conn:
-                conn.update(spreadsheet=spreadsheet_url, data=st.session_state.df)
+                url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+                conn.update(spreadsheet=url, data=st.session_state.df)
                 st.session_state.cart = []
                 st.success("Lånet registrerat!")
                 st.rerun()
@@ -134,7 +108,8 @@ elif menu == "🔄 Återlämning":
             tag = choice.split("[")[1].split("]")[0]
             st.session_state.df.loc[st.session_state.df['Resurstagg'] == tag, ['Status', 'Aktuell ägare']] = ['Tillgänglig', '']
             if conn:
-                conn.update(spreadsheet=spreadsheet_url, data=st.session_state.df)
+                url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+                conn.update(spreadsheet=url, data=st.session_state.df)
                 st.success("Återlämnad!")
                 st.rerun()
     else: st.info("Inga lånade instrument.")
