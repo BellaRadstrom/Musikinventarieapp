@@ -15,22 +15,27 @@ def get_robust_connection():
             
         conf = st.secrets["connections"]["gsheets"].to_dict()
         
-        # Spara undan URL:en och ta bort den från inloggnings-paketet
+        # 1. Extrahera det absolut nödvändiga
         sheet_url = conf.get("spreadsheet")
-        if "spreadsheet" in conf: del conf["spreadsheet"]
-        if "type" in conf: del conf["type"]
         
-        # Fixa Private Key
+        # 2. Skapa ett rent inloggnings-objekt (endast det biblioteket kräver)
+        # Vi tar bort allt som kan orsaka "unexpected keyword argument"
+        creds = {
+            "type": "service_account",
+            "client_email": conf.get("client_email"),
+        }
+        
+        # 3. Fixa Private Key (viktigaste delen)
         raw_key = conf.get("private_key", "")
         clean_content = raw_key.replace("-----BEGIN PRIVATE KEY-----", "") \
                                .replace("-----END PRIVATE KEY-----", "") \
                                .replace("\\n", "\n").replace("\n", "").replace(" ", "").strip()
         
         lines = [clean_content[i:i+64] for i in range(0, len(clean_content), 64)]
-        conf["private_key"] = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(lines) + "\n-----END PRIVATE KEY-----\n"
+        creds["private_key"] = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(lines) + "\n-----END PRIVATE KEY-----\n"
         
-        # Skapa anslutningen med enbart inloggningsuppgifter
-        connection = st.connection("gsheets", type=GSheetsConnection, **conf)
+        # 4. Skapa anslutningen med enbart de rena inloggningsuppgifterna
+        connection = st.connection("gsheets", type=GSheetsConnection, **creds)
         return connection, sheet_url
     except Exception as e:
         st.session_state.error_log = f"Konfigurationsfel: {e}"
@@ -43,7 +48,6 @@ conn, spreadsheet_url = get_robust_connection()
 def load_data():
     if conn and spreadsheet_url:
         try:
-            # Vi skickar med URL:en här istället för i anslutningen
             return conn.read(spreadsheet=spreadsheet_url, ttl="0s")
         except Exception as e:
             st.session_state.error_log = f"Läsfel: {e}"
@@ -63,7 +67,7 @@ with st.sidebar:
         st.session_state.df = load_data()
         st.rerun()
 
-# --- VY: SÖK & INVENTARIE ---
+# --- VYER ---
 if menu == "🔍 Sök & Inventarie":
     st.title("Sök & Inventarie")
     df = st.session_state.df
@@ -81,7 +85,6 @@ if menu == "🔍 Sök & Inventarie":
     else:
         st.info("Ingen data hittades.")
 
-# --- VY: LÄGG TILL ---
 elif menu == "➕ Lägg till (Kamera)":
     st.title("Registrera ny utrustning")
     with st.form("add_item", clear_on_submit=True):
@@ -102,7 +105,6 @@ elif menu == "➕ Lägg till (Kamera)":
                         st.error(f"Kunde inte spara: {e}")
             else: st.error("Modellnamn krävs.")
 
-# --- VY: LÅNEKORG ---
 elif menu == "🛒 Lånekorg":
     st.title("Utlåning")
     if st.session_state.cart:
@@ -114,11 +116,10 @@ elif menu == "🛒 Lånekorg":
             if conn:
                 conn.update(spreadsheet=spreadsheet_url, data=st.session_state.df)
                 st.session_state.cart = []
-                st.success("Klart!")
+                st.success("Lånet registrerat!")
                 st.rerun()
     else: st.info("Korgen är tom.")
 
-# --- VY: ÅTERLÄMNING ---
 elif menu == "🔄 Återlämning":
     st.title("Återlämning")
     loaned = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']
@@ -133,7 +134,6 @@ elif menu == "🔄 Återlämning":
                 st.rerun()
     else: st.info("Inga lånade instrument.")
 
-# --- VY: SYSTEM ---
 elif menu == "⚙️ System":
     st.title("System & Diagnostik")
     if 'error_log' in st.session_state:
