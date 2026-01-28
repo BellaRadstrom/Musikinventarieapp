@@ -10,22 +10,27 @@ import random
 # --- GRUNDINSTÄLLNINGAR ---
 st.set_page_config(page_title="InstrumentDB", layout="wide")
 
-# --- FUNKTION FÖR ATT LAGA NYCKELN ---
+# --- FUNKTION FÖR ANSLUTNING ---
 def get_clean_connection():
     try:
-        # Hämta råa secrets
+        # Vi hämtar inställningarna från Secrets
         conf = st.secrets["connections"]["gsheets"].to_dict()
-        # Rensa nyckeln från eventuella dubbla backslash eller felaktiga radbrytningar
+        
+        # Vi rensar bort 'type' från konfigurationen för att undvika krock i koden
+        if "type" in conf:
+            del conf["type"]
+            
+        # Fixa radbrytningar i nyckeln om de klistrats in på en rad
         if "private_key" in conf:
             conf["private_key"] = conf["private_key"].replace("\\n", "\n")
         
-        # Skapa anslutningen manuellt med de rensade inställningarna
+        # Skapa anslutningen med de rena inställningarna
         return st.connection("gsheets", type=GSheetsConnection, **conf)
     except Exception as e:
         st.error(f"Kopplingsfel: {e}")
         return None
 
-# --- LADDA DATA ---
+# --- HANTERA DATA ---
 conn = get_clean_connection()
 
 def load_data():
@@ -46,7 +51,7 @@ if 'cart' not in st.session_state:
 with st.sidebar:
     st.title("🎵 Musikinventering")
     menu = st.radio("MENY", ["🔍 Sök & Inventarie", "➕ Lägg till", "🛒 Lånekorg", "🔄 Återlämning", "⚙️ System"])
-    if st.button("🔄 Uppdatera lista"):
+    if st.button("🔄 Uppdatera från molnet"):
         st.session_state.df = load_data()
         st.rerun()
 
@@ -55,18 +60,20 @@ if menu == "🔍 Sök & Inventarie":
     st.title("Sök & Inventarie")
     df = st.session_state.df
     if not df.empty:
-        search = st.text_input("Sök i registret", placeholder="Sök på modell, märke eller ID...")
+        search = st.text_input("Sök i registret", placeholder="Modell, märke eller ID...")
+        # Filtrera datan baserat på sökning
         mask = df.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
         
         for idx, row in df[mask].iterrows():
             c1, c2, c3 = st.columns([3, 1, 1])
-            c1.write(f"**{row['Modell']}** | {row['Tillverkare']} | ID: {row['Resurstagg']}")
-            c2.write(f"Status: {row['Status']}")
-            if row['Status'] == 'Tillgänglig' and c3.button("Låna", key=f"l_{idx}"):
+            c1.write(f"**{row['Modell']}** | {row.get('Tillverkare', '')} | ID: {row['Resurstagg']}")
+            status = row.get('Status', 'Tillgänglig')
+            c2.write(f"Status: {status}")
+            if status == 'Tillgänglig' and c3.button("Låna", key=f"l_{idx}"):
                 st.session_state.cart.append(row.to_dict())
-                st.toast("Tillagd i korg")
+                st.toast(f"{row['Modell']} tillagd")
     else:
-        st.warning("Ingen data hittades. Kontrollera 'System' för felmeddelanden.")
+        st.warning("Hittade ingen data i ditt Google Sheet.")
 
 # --- VY: LÄGG TILL (MED KAMERA) ---
 elif menu == "➕ Lägg till":
@@ -76,7 +83,6 @@ elif menu == "➕ Lägg till":
         modell = col1.text_input("Modell *")
         tillverkare = col2.text_input("Tillverkare")
         tagg = col1.text_input("Resurstagg / ID")
-        
         st.write("---")
         foto = st.camera_input("Ta kontrollfoto")
         
@@ -86,59 +92,56 @@ elif menu == "➕ Lägg till":
                     "Modell": modell, 
                     "Tillverkare": tillverkare, 
                     "Resurstagg": tagg if tagg else str(random.randint(1000, 9999)),
-                    "Status": "Tillgänglig"
+                    "Status": "Tillgänglig",
+                    "Aktuell ägare": ""
                 }
+                # Uppdatera lokal data och skicka till Google
                 st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_data])], ignore_index=True)
-                # Försök spara till Google Sheets
                 if conn:
                     conn.update(data=st.session_state.df)
-                    st.success("Sparat!")
+                    st.success(f"{modell} sparad!")
                     st.rerun()
             else:
-                st.error("Du måste fylla i modellnamn.")
+                st.error("Modellnamn krävs.")
 
-# --- VY: LÅNEKORG ---
+# --- VY: LÄNEKORG ---
 elif menu == "🛒 Lånekorg":
     st.title("Utlåning")
     if st.session_state.cart:
-        for i, item in enumerate(st.session_state.cart):
+        for item in st.session_state.cart:
             st.write(f"• **{item['Modell']}** ({item['Resurstagg']})")
-        
-        namn = st.text_input("Vem lånar?")
-        if st.button("Bekräfta lån") and namn:
+        namn = st.text_input("Låntagarens namn")
+        if st.button("Bekräfta utlån") and namn:
             for item in st.session_state.cart:
                 st.session_state.df.loc[st.session_state.df['Resurstagg'] == item['Resurstagg'], ['Status', 'Aktuell ägare']] = ['Utlånad', namn]
             if conn:
                 conn.update(data=st.session_state.df)
                 st.session_state.cart = []
-                st.success("Lånet registrerat!")
+                st.success("Utlåning klar!")
                 st.rerun()
     else:
-        st.info("Korgen är tom.")
+        st.info("Lånekorgen är tom.")
 
 # --- VY: ÅTERLÄMNING ---
 elif menu == "🔄 Återlämning":
     st.title("Återlämning")
-    loaned = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']
+    df = st.session_state.df
+    loaned = df[df['Status'] == 'Utlånad']
     if not loaned.empty:
-        choice = st.selectbox("Välj föremål:", loaned['Modell'] + " [" + loaned['Resurstagg'] + "]")
+        choice = st.selectbox("Välj föremål att lämna tillbaka:", loaned['Modell'] + " [" + loaned['Resurstagg'] + "]")
         if st.button("Registrera retur"):
             tag = choice.split("[")[1].split("]")[0]
             st.session_state.df.loc[st.session_state.df['Resurstagg'] == tag, ['Status', 'Aktuell ägare']] = ['Tillgänglig', '']
             if conn:
                 conn.update(data=st.session_state.df)
-                st.success("Retur klar!")
+                st.success("Instrumentet är nu ledigt igen!")
                 st.rerun()
     else:
-        st.info("Inga utlånade föremål.")
+        st.info("Inga instrument är utlånade just nu.")
 
 # --- VY: SYSTEM ---
 elif menu == "⚙️ System":
     st.title("System & Diagnostik")
-    if 'error_log' in st.session_state:
-        st.error(f"Senaste felmeddelande: {st.session_state.error_log}")
-    else:
-        st.success("Anslutningen mot Google Sheets fungerar!")
-    
-    st.write("### Rådata")
+    st.success("Anslutningen mot Google Sheets fungerar!")
+    st.write("### Aktuell databas (Rådata)")
     st.dataframe(st.session_state.df)
