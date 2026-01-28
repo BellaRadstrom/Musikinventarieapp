@@ -15,17 +15,17 @@ def get_robust_connection():
             
         conf = st.secrets["connections"]["gsheets"].to_dict()
         
-        # 1. Extrahera det absolut nödvändiga
+        # 1. Extrahera spreadsheet URL
         sheet_url = conf.get("spreadsheet")
         
-        # 2. Skapa ett rent inloggnings-objekt (endast det biblioteket kräver)
-        # Vi tar bort allt som kan orsaka "unexpected keyword argument"
+        # 2. Bygg ett super-rent inloggnings-objekt
+        # Vi inkluderar ENDAST det Google behöver för att identifiera dig
+        # Vi tar bort 'type' helt härifrån eftersom det skickas separat i st.connection
         creds = {
-            "type": "service_account",
             "client_email": conf.get("client_email"),
         }
         
-        # 3. Fixa Private Key (viktigaste delen)
+        # 3. Fixa Private Key
         raw_key = conf.get("private_key", "")
         clean_content = raw_key.replace("-----BEGIN PRIVATE KEY-----", "") \
                                .replace("-----END PRIVATE KEY-----", "") \
@@ -34,7 +34,12 @@ def get_robust_connection():
         lines = [clean_content[i:i+64] for i in range(0, len(clean_content), 64)]
         creds["private_key"] = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(lines) + "\n-----END PRIVATE KEY-----\n"
         
-        # 4. Skapa anslutningen med enbart de rena inloggningsuppgifterna
+        # Lägg till project_id bara om det behövs (vissa versioner kräver det)
+        if conf.get("project_id"):
+            creds["project_id"] = conf.get("project_id")
+
+        # 4. Skapa anslutningen
+        # Notera: Vi skickar INTE 'type' inuti **creds nu, bara i det första argumentet
         connection = st.connection("gsheets", type=GSheetsConnection, **creds)
         return connection, sheet_url
     except Exception as e:
