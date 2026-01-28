@@ -20,18 +20,20 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- GOOGLE SHEETS ANSLUTNING ---
-# Anslutningen hämtar automatiskt URL och nyckel från Streamlit Secrets
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data():
     try:
-        # ttl="0s" säkerställer att vi alltid hämtar den senaste datan
-        return conn.read(ttl="0s")
+        # Hämtar data utan cache för att alltid se senaste ändringarna
+        data = conn.read(ttl="0s")
+        if data is None or data.empty:
+            # Om arket är tomt, skapa en DataFrame med dina rubriker
+            return pd.DataFrame(columns=["Enhetsfoto", "Modell", "Tillverkare", "Typ", "Färg", "Resurstagg", "Streckkod", "Serienummer", "Status", "Aktuell ägare", "Utlåningsdatum"])
+        return data
     except Exception as e:
-        st.error(f"Kunde inte hämta data från Google Sheets: {e}")
-        # Returnera tom tabell med korrekta kolumner om hämtning misslyckas
-        cols = ["Enhetsfoto", "Modell", "Tillverkare", "Typ", "Färg", "Resurstagg", "Streckkod", "Serienummer", "Status", "Aktuell ägare", "Utlåningsdatum"]
-        return pd.DataFrame(columns=cols)
+        st.error(f"Kopplingsfel till Google Sheets: {e}")
+        # Returnera tom tabell vid fel så resten av appen inte kraschar
+        return pd.DataFrame(columns=["Enhetsfoto", "Modell", "Tillverkare", "Typ", "Färg", "Resurstagg", "Streckkod", "Serienummer", "Status", "Aktuell ägare", "Utlåningsdatum"])
 
 def save_data(df):
     try:
@@ -48,7 +50,7 @@ def get_qr_image(data):
     qr.make(fit=True)
     return qr.make_image(fill_color="black", back_color="white")
 
-# Initiera session data
+# Initiera data i sessionen
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
 
@@ -61,47 +63,47 @@ with st.sidebar:
     menu = st.radio("MENY", 
         ["🔍 Sök & Inventarie", "➕ Lägg till musikutrustning", "🛒 Lånekorg", "🔄 Återlämning", "📝 Hantera & Redigera", "⚙️ System & Export"])
     
-    if st.button("🔄 Tvinga synkronisering"):
+    if st.button("🔄 Synka med Google Sheets"):
         st.session_state.df = load_data()
         st.rerun()
     
     st.write("---")
-    st.info("Status: Ansluten till molndatabas")
+    st.success("🟢 Status: Molnsynk aktiv")
 
 # --- VY: SÖK & INVENTARIE ---
 if menu == "🔍 Sök & Inventarie":
     st.title("Sök & Inventarie")
     
-    # Dashboard statistik
-    c1, c2, c3 = st.columns(3)
     df = st.session_state.df
+    c1, c2, c3 = st.columns(3)
     total = len(df)
     avail = len(df[df['Status'] == 'Tillgänglig']) if total > 0 else 0
     loaned = len(df[df['Status'] == 'Utlånad']) if total > 0 else 0
     
-    c1.markdown(f"<div class='stat-card'>Totalt<br><h2>{total}</h2></div>", unsafe_allow_html=True)
+    c1.markdown(f"<div class='stat-card'>Totalt i listan<br><h2>{total}</h2></div>", unsafe_allow_html=True)
     c2.markdown(f"<div class='stat-card'><span style='color:#10b981;'>Ledigt</span><br><h2>{avail}</h2></div>", unsafe_allow_html=True)
     c3.markdown(f"<div class='stat-card'><span style='color:#f59e0b;'>Utlånat</span><br><h2>{loaned}</h2></div>", unsafe_allow_html=True)
 
-    search = st.text_input("", placeholder="Sök instrument...")
+    search = st.text_input("", placeholder="Sök på modell, tillverkare eller ID...")
     st.write("---")
     
     if total > 0:
+        # Sökfilter
         mask = df.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
-        filtered = df[mask]
+        filtered_df = df[mask]
         
-        for idx, row in filtered.iterrows():
+        for idx, row in filtered_df.iterrows():
             r_img, r_info, r_qr, r_status, r_owner, r_action = st.columns([1, 2, 1, 1, 1, 1])
             
             with r_img:
                 if pd.notnull(row['Enhetsfoto']) and str(row['Enhetsfoto']).startswith('http'):
-                    st.image(row['Enhetsfoto'], width=65)
+                    st.image(row['Enhetsfoto'], width=60)
                 else:
                     st.write("🖼️")
             
-            r_info.write(f"**{row['Modell']}**")
-            r_info.caption(row.get('Tillverkare', 'Okänd tillverkare'))
+            r_info.write(f"**{row['Modell']}**\n{row['Tillverkare'] if pd.notnull(row['Tillverkare']) else ''}")
             
+            # QR-kod för resurstagg
             qr_img = get_qr_image(row['Resurstagg'])
             buf = BytesIO()
             qr_img.save(buf, format="PNG")
@@ -115,94 +117,90 @@ if menu == "🔍 Sök & Inventarie":
                 if r_action.button("➕ Välj", key=f"add_{idx}"):
                     if row['Resurstagg'] not in [c['Resurstagg'] for c in st.session_state.cart]:
                         st.session_state.cart.append(row.to_dict())
-                        st.toast(f"{row['Modell']} tillagd i korgen!")
+                        st.toast(f"✅ {row['Modell']} tillagd")
     else:
-        st.warning("Hittade ingen data i Google Sheets. Har du lagt till rubrikerna?")
+        st.info("Databasen är tom. Lägg till instrument under fliken 'Lägg till'.")
 
 # --- VY: LÄGG TILL ---
 elif menu == "➕ Lägg till musikutrustning":
-    st.title("Ny registrering")
+    st.title("Registrera Ny Utrustning")
     with st.form("add_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
-        modell = col1.text_input("Modellnamn *")
-        tillv = col2.text_input("Märke/Tillverkare")
-        tagg = col1.text_input("Eget ID (Lämna tom för auto-ID)")
-        foto = col2.text_input("Länk till produktbild (URL)")
+        modell = col1.text_input("Modell *")
+        tillv = col2.text_input("Tillverkare")
+        typ = col1.selectbox("Typ", ["Gitarr", "Bas", "Trummor", "Keyboard", "Förstärkare", "PA/Ljud", "Övrigt"])
+        farg = col2.text_input("Färg")
+        tagg = col1.text_input("Resurstagg (ID)")
+        foto = col2.text_input("Bild-URL")
         
-        if st.form_submit_button("💾 SPARA I DATABAS"):
+        st.write("---")
+        st.camera_input("Ta kontrollfoto (Sparas ej i molnet)")
+        
+        if st.form_submit_button("💾 SPARA PERMANENT"):
             if modell:
                 final_id = tagg if tagg else f"ID-{random.randint(1000,9999)}"
-                new_data = {
-                    "Enhetsfoto": foto, "Modell": modell, "Tillverkare": tillv, 
+                new_row = {
+                    "Enhetsfoto": foto, "Modell": modell, "Tillverkare": tillv, "Typ": typ, "Färg": farg,
                     "Resurstagg": str(final_id), "Status": "Tillgänglig", "Aktuell ägare": "", "Utlåningsdatum": ""
                 }
-                st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_data])], ignore_index=True)
+                st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_row])], ignore_index=True)
                 if save_data(st.session_state.df):
-                    st.success(f"Sparad! ID: {final_id}")
+                    st.success(f"✅ {modell} sparad i Google Sheets!")
                     st.balloons()
             else:
-                st.error("Modellnamn krävs.")
+                st.error("Modellnamn är obligatoriskt!")
 
 # --- VY: LÄNEKORG ---
 elif menu == "🛒 Lånekorg":
-    st.title("Hantera lån")
+    st.title("Genomför Utlåning")
     if not st.session_state.cart:
-        st.info("Korgen är tom. Välj instrument i Sök-vyn först.")
+        st.info("Inga instrument valda.")
     else:
         for item in st.session_state.cart:
-            st.write(f"✅ **{item['Modell']}** (ID: {item['Resurstagg']})")
+            st.write(f"• **{item['Modell']}** ({item['Resurstagg']})")
         
-        borrower = st.text_input("Låntagarens fullständiga namn *")
-        if st.button("🚀 BEKRÄFTA UTLÅNING"):
+        borrower = st.text_input("Vem lånar? *")
+        if st.button("🚀 BEKRÄFTA LÅN"):
             if borrower:
                 for item in st.session_state.cart:
                     st.session_state.df.loc[st.session_state.df['Resurstagg'] == str(item['Resurstagg']), ['Status', 'Aktuell ägare', 'Utlåningsdatum']] = ['Utlånad', borrower, datetime.now().strftime('%Y-%m-%d')]
                 if save_data(st.session_state.df):
                     st.session_state.cart = []
-                    st.success(f"Lånet registrerat på {borrower}!")
+                    st.success(f"Utlånat till {borrower}!")
                     st.rerun()
             else:
-                st.error("Du måste ange ett namn.")
+                st.error("Ange ett namn!")
 
 # --- VY: ÅTERLÄMNING ---
 elif menu == "🔄 Återlämning":
     st.title("Återlämning")
-    loaned_items = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']
-    if not loaned_items.empty:
-        choice = st.selectbox("Välj föremål:", loaned_items['Modell'] + " [" + loaned_items['Resurstagg'].astype(str) + "]")
+    loaned = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']
+    if not loaned.empty:
+        sel = st.selectbox("Välj föremål:", loaned['Modell'] + " [" + loaned['Resurstagg'].astype(str) + "]")
         if st.button("📥 REGISTRERA RETUR"):
-            target_tag = choice.split("[")[1].split("]")[0]
-            st.session_state.df.loc[st.session_state.df['Resurstagg'].astype(str) == target_tag, ['Status', 'Aktuell ägare', 'Utlåningsdatum']] = ['Tillgänglig', "", ""]
+            tag = sel.split("[")[1].split("]")[0]
+            st.session_state.df.loc[st.session_state.df['Resurstagg'].astype(str) == tag, ['Status', 'Aktuell ägare', 'Utlåningsdatum']] = ['Tillgänglig', "", ""]
             if save_data(st.session_state.df):
-                st.success("Instrumentet är nu tillgängligt igen.")
+                st.success("Återlämnad!")
                 st.rerun()
     else:
-        st.info("Det finns inga aktiva utlån just nu.")
+        st.info("Inga instrument är utlånade.")
 
 # --- VY: HANTERA & REDIGERA ---
 elif menu == "📝 Hantera & Redigera":
-    st.title("Administrera register")
+    st.title("Redigera Register")
     if not st.session_state.df.empty:
-        edit_choice = st.selectbox("Välj föremål för ändring:", st.session_state.df['Modell'] + " [" + st.session_state.df['Resurstagg'].astype(str) + "]")
-        target_id = edit_choice.split("[")[1].split("]")[0]
+        sel = st.selectbox("Välj föremål:", st.session_state.df['Modell'] + " [" + st.session_state.df['Resurstagg'].astype(str) + "]")
+        tag = sel.split("[")[1].split("]")[0]
+        row = st.session_state.df[st.session_state.df['Resurstagg'].astype(str) == tag].iloc[0]
         
-        with st.form("edit_instrument"):
-            new_modell = st.text_input("Ändra modellnamn")
-            if st.form_submit_button("💾 UPPDATERA INFO"):
-                st.session_state.df.loc[st.session_state.df['Resurstagg'].astype(str) == target_id, 'Modell'] = new_modell
-                if save_data(st.session_state.df):
-                    st.success("Informationen har uppdaterats.")
-                    st.rerun()
-            
-            st.write("---")
-            if st.form_submit_button("🗑️ RADERA OBJEKT FRÅN REGISTER"):
-                st.session_state.df = st.session_state.df[st.session_state.df['Resurstagg'].astype(str) != target_id]
-                if save_data(st.session_state.df):
-                    st.warning("Objektet har raderats.")
-                    st.rerun()
-
-# --- VY: SYSTEM & EXPORT ---
-elif menu == "⚙️ System & Export":
-    st.title("Systeminformation")
-    st.write("Appen är kopplad till din Google Sheets-databas via en säker Service Account-nyckel.")
-    st.info("Tips: Om du ändrar direkt i Google Sheets, använd knappen 'Synka' i sidomenyn för att uppdatera appen.")
+        with st.form("edit"):
+            new_m = st.text_input("Modell", value=row['Modell'])
+            new_t = st.text_input("Tillverkare", value=row['Tillverkare'])
+            if st.form_submit_button("💾 UPPDATERA"):
+                st.session_state.df.loc[st.session_state.df['Resurstagg'].astype(str) == tag, ['Modell', 'Tillverkare']] = [new_m, new_t]
+                save_data(st.session_state.df)
+                st.success("Uppdaterad!")
+                st.rerun()
+            if st.form_submit_button("🗑️ RADERA"):
+                st.session_state.df = st.
