@@ -57,9 +57,7 @@ if 'cart' not in st.session_state:
 # --- SIDOMENY ---
 with st.sidebar:
     st.title("🎵 InstrumentDB")
-    menu = st.radio("MENY", 
-        ["🔍 Sök & Inventarie", "➕ Lägg till musikutrustning", "🛒 Lånekorg", "🔄 Återlämning", "📝 Hantera & Redigera", "⚙️ System & Export"])
-    
+    menu = st.radio("MENY", ["🔍 Sök & Inventarie", "➕ Lägg till musikutrustning", "🛒 Lånekorg", "🔄 Återlämning", "📝 Hantera & Redigera", "⚙️ System & Export"])
     if st.button("🔄 Synka med Google Sheets"):
         st.session_state.df = load_data()
         st.rerun()
@@ -68,18 +66,15 @@ with st.sidebar:
 if menu == "🔍 Sök & Inventarie":
     st.title("Sök & Inventarie")
     df = st.session_state.df
-    
     c1, c2, c3 = st.columns(3)
     total = len(df)
     avail = len(df[df['Status'] == 'Tillgänglig']) if total > 0 else 0
     loaned = len(df[df['Status'] == 'Utlånad']) if total > 0 else 0
-    
     c1.markdown(f"<div class='stat-card'>Totalt<br><h2>{total}</h2></div>", unsafe_allow_html=True)
     c2.markdown(f"<div class='stat-card'><span style='color:#10b981;'>Ledigt</span><br><h2>{avail}</h2></div>", unsafe_allow_html=True)
     c3.markdown(f"<div class='stat-card'><span style='color:#f59e0b;'>Utlånat</span><br><h2>{loaned}</h2></div>", unsafe_allow_html=True)
 
     search = st.text_input("", placeholder="Sök...")
-    
     if total > 0:
         mask = df.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
         for idx, row in df[mask].iterrows():
@@ -100,23 +95,29 @@ if menu == "🔍 Sök & Inventarie":
                 if r_action.button("➕ Låna", key=f"add_{idx}"):
                     st.session_state.cart.append(row.to_dict())
                     st.toast("Tillagd!")
-    else:
-        st.info("Tomt i registret.")
+    else: st.info("Tomt i registret.")
 
-# --- VY: LÄGG TILL ---
+# --- VY: LÄGG TILL (MED KAMERA) ---
 elif menu == "➕ Lägg till musikutrustning":
-    st.title("Registrera Ny")
+    st.title("Registrera Ny Utrustning")
     with st.form("add_form", clear_on_submit=True):
-        modell = st.text_input("Modell *")
-        tillv = st.text_input("Tillverkare")
-        tagg = st.text_input("ID/Tagg")
-        if st.form_submit_button("💾 SPARA"):
+        col1, col2 = st.columns(2)
+        modell = col1.text_input("Modell *")
+        tillv = col2.text_input("Tillverkare")
+        tagg = col1.text_input("ID/Tagg (Lämna tom för auto)")
+        foto_url = col2.text_input("Bild-URL (valfritt)")
+        st.write("---")
+        cam_image = st.camera_input("Ta kontrollfoto (Sparas ej i Sheets, endast för session)")
+        
+        if st.form_submit_button("💾 SPARA PERMANENT"):
             if modell:
                 final_id = tagg if tagg else f"ID-{random.randint(1000,9999)}"
-                new_row = {"Modell": modell, "Tillverkare": tillv, "Resurstagg": str(final_id), "Status": "Tillgänglig"}
+                new_row = {"Modell": modell, "Tillverkare": tillv, "Resurstagg": str(final_id), "Status": "Tillgänglig", "Enhetsfoto": foto_url}
                 st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_row])], ignore_index=True)
-                save_data(st.session_state.df)
-                st.success("Sparad!")
+                if save_data(st.session_state.df):
+                    st.success("Sparad i Google Sheets!")
+                    st.rerun()
+            else: st.error("Modellnamn krävs!")
 
 # --- VY: LÄNEKORG ---
 elif menu == "🛒 Lånekorg":
@@ -126,14 +127,14 @@ elif menu == "🛒 Lånekorg":
     else:
         for item in st.session_state.cart:
             st.write(f"• {item['Modell']}")
-        borrower = st.text_input("Namn *")
-        if st.button("🚀 BEKRÄFTA"):
+        borrower = st.text_input("Låntagarens namn *")
+        if st.button("🚀 BEKRÄFTA LÅN"):
             if borrower:
                 for item in st.session_state.cart:
                     st.session_state.df.loc[st.session_state.df['Resurstagg'] == str(item['Resurstagg']), ['Status', 'Aktuell ägare', 'Utlåningsdatum']] = ['Utlånad', borrower, datetime.now().strftime('%Y-%m-%d')]
-                save_data(st.session_state.df)
-                st.session_state.cart = []
-                st.rerun()
+                if save_data(st.session_state.df):
+                    st.session_state.cart = []
+                    st.rerun()
 
 # --- VY: ÅTERLÄMNING ---
 elif menu == "🔄 Återlämning":
@@ -141,7 +142,7 @@ elif menu == "🔄 Återlämning":
     loaned = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']
     if not loaned.empty:
         sel = st.selectbox("Välj föremål:", loaned['Modell'] + " [" + loaned['Resurstagg'].astype(str) + "]")
-        if st.button("📥 RETUR"):
+        if st.button("📥 ÅTERLÄMNA"):
             tag = sel.split("[")[1].split("]")[0]
             st.session_state.df.loc[st.session_state.df['Resurstagg'].astype(str) == tag, ['Status', 'Aktuell ägare', 'Utlåningsdatum']] = ['Tillgänglig', "", ""]
             save_data(st.session_state.df)
@@ -149,11 +150,11 @@ elif menu == "🔄 Återlämning":
 
 # --- VY: HANTERA & REDIGERA ---
 elif menu == "📝 Hantera & Redigera":
-    st.title("Redigera")
+    st.title("Admin")
     if not st.session_state.df.empty:
         sel = st.selectbox("Välj:", st.session_state.df['Modell'] + " [" + st.session_state.df['Resurstagg'].astype(str) + "]")
         tag = sel.split("[")[1].split("]")[0]
-        if st.button("🗑️ RADERA"):
+        if st.button("🗑️ RADERA OBJEKT"):
             st.session_state.df = st.session_state.df[st.session_state.df['Resurstagg'].astype(str) != tag]
             save_data(st.session_state.df)
             st.rerun()
