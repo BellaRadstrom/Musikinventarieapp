@@ -62,51 +62,55 @@ def generate_qr(data):
 st.sidebar.title("🎸 InstrumentDB")
 menu = st.sidebar.selectbox("Navigering", ["🔍 Sök & Låna", "➕ Registrera Nytt", "🔄 Återlämning", "📋 Inventering", "⚙️ Admin"])
 
-# --- VY: SÖK & LÅNA ---
+# --- VY: SÖK & LÅNA (Uppdaterad med miniatyrer) ---
 if menu == "🔍 Sök & Låna":
-    st.header("Sök i inventariet")
+    st.header("Sök & Låna")
     
-    col_search, col_scan = st.columns([3, 1])
-    search_query = col_search.text_input("Sök i alla kolumner...", placeholder="Modell, ID, Färg...")
+    # Sökfält för alla kolumner
+    search_query = st.text_input("Sök i inventariet...", placeholder="Skriv modell, märke, ID eller färg...")
     
-    # QR-Scanner (Simulering via kamera-input eller text)
-    if col_scan.button("📷 Skanna QR"):
-        st.info("Använd sökfältet med din QR-scanner/kamera.")
-
     df = st.session_state.df
     if not df.empty:
-        # Global sökning
+        # Söklogik
         mask = df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)
         results = df[mask]
 
         for idx, row in results.iterrows():
-            with st.expander(f"{row['Modell']} ({row['Tillverkare']}) - {row['Status']}"):
-                c1, c2, c3 = st.columns([1, 2, 1])
+            # Skapa en visuell ram (container) för varje produkt
+            with st.container(border=True):
+                # Dela upp i kolumner: Bild | Info | Knappar
+                col_img, col_info, col_action = st.columns([1, 3, 1])
                 
-                with c1:
-                    # Visa QR-kod för utskrift
-                    qr_img = generate_qr(row['Resurstagg'])
-                    st.image(qr_img, caption="QR-ID", width=100)
-                    st.download_button("Hämta QR (3x4cm)", qr_img, file_name=f"QR_{row['Resurstagg']}.png", mime="image/png")
+                with col_img:
+                    # Kontrollera om det finns en bild-URL eller data
+                    if row['Enhetsfoto'] and str(row['Enhetsfoto']).startswith("http"):
+                        st.image(row['Enhetsfoto'], width=80)
+                    else:
+                        # Placeholder om bild saknas (ikon istället för tom yta)
+                        st.markdown("📷\n*Ingen bild*")
                 
-                with c2:
-                    # Editering
-                    with st.popover("Redigera info"):
-                        new_model = st.text_input("Modell", value=row['Modell'], key=f"mod_{idx}")
-                        if st.button("Spara ändring", key=f"save_ed_{idx}"):
-                            st.session_state.df.at[idx, 'Modell'] = new_model
-                            save_data(st.session_state.df)
-                            st.rerun()
-                    st.write(f"**ID:** {row['Resurstagg']} | **SN:** {row['Serienummer']}")
-                
-                with c3:
+                with col_info:
+                    st.markdown(f"### {row['Modell']}")
+                    st.caption(f"{row['Tillverkare']} | ID: {row['Resurstagg']} | SN: {row['Serienummer']}")
+                    
+                    # Status-tagg
                     if row['Status'] == 'Tillgänglig':
-                        if st.button("➕ Till lånekorg", key=f"add_{idx}"):
+                        st.success(f"✅ {row['Status']}")
+                    else:
+                        st.error(f"🔴 Utlånad till: {row['Aktuell ägare']}")
+                
+                with col_action:
+                    # QR-knapp och Låne-knapp
+                    with st.popover("QR"):
+                        qr_img = generate_qr(row['Resurstagg'])
+                        st.image(qr_img, use_container_width=True)
+                        st.download_button("Ladda ner", qr_img, file_name=f"QR_{row['Resurstagg']}.png", key=f"dl_{idx}")
+                    
+                    if row['Status'] == 'Tillgänglig':
+                        if st.button("🛒 Lägg till", key=f"add_{idx}"):
                             if row['Resurstagg'] not in [i['Resurstagg'] for i in st.session_state.cart]:
                                 st.session_state.cart.append(row.to_dict())
-                                st.toast("Tillagd!")
-                    else:
-                        st.warning(f"Lånad av: {row['Aktuell ägare']}")
+                                st.toast(f"{row['Modell']} i korgen!")
 
     # LÅNEKORG (Flytande sektion)
     if st.session_state.cart:
@@ -216,3 +220,4 @@ elif menu == "📋 Inventering":
         # Här kan vi spara till en ny flik eller CSV
         inv_df = pd.DataFrame(st.session_state.inv_list)
         st.download_button("Ladda ner inventeringsfil", inv_df.to_csv(index=False), "inventering_2024.csv")
+
