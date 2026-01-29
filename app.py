@@ -6,6 +6,7 @@ from datetime import datetime
 import qrcode
 from io import BytesIO
 from PIL import Image
+import traceback
 
 # Google Drive API Importer
 from googleapiclient.discovery import build
@@ -16,10 +17,17 @@ from google.oauth2 import service_account
 st.set_page_config(page_title="Musik-Inventering Pro", layout="wide", page_icon="🎸")
 
 # --- DRIVE KONFIGURATION ---
-# Ditt specifika Mapp-ID
 FOLDER_ID = "1KDIg6_7MmOrRRwA1MwLiePVAwbqG60aR"
 
-# --- CSS FÖR KNAPPAR OCH LAYOUT ---
+# --- SESSION STATE FÖR LOGG ---
+if 'error_log' not in st.session_state:
+    st.session_state.error_log = []
+
+def add_log(msg):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    st.session_state.error_log.append(f"[{timestamp}] {msg}")
+
+# --- CSS ---
 st.markdown("""
     <style>
     .stButton>button { width: 100%; border-radius: 5px; height: 3em; }
@@ -30,7 +38,6 @@ st.markdown("""
 # --- HJÄLPFUNKTION: DRIVE UPPLADDNING ---
 def upload_to_drive(file_content, filename):
     try:
-        # Använder samma credentials som redan finns i din secrets för GSheets
         creds_info = st.secrets["connections"]["gsheets"]
         credentials = service_account.Credentials.from_service_account_info(creds_info)
         drive_service = build('drive', 'v3', credentials=credentials)
@@ -42,17 +49,31 @@ def upload_to_drive(file_content, filename):
         
         media = MediaIoBaseUpload(BytesIO(file_content), mimetype='image/jpeg')
         
+        # supportsAllDrives=True hjälper mot kvota-problem i delade miljöer
         file = drive_service.files().create(
             body=file_metadata,
             media_body=media,
-            fields='id'
+            fields='id',
+            supportsAllDrives=True
         ).execute()
         
         file_id = file.get('id')
-        # Skapar en länk som Streamlit kan visa som bild direkt
+        
+        # Sätt rättigheter så bilden kan visas i appen
+        try:
+            drive_service.permissions().create(
+                fileId=file_id,
+                body={'type': 'anyone', 'role': 'reader'},
+                supportsAllDrives=True
+            ).execute()
+        except:
+            add_log("Kunde inte sätta publika rättigheter, men filen är uppladdad.")
+
         return f"https://drive.google.com/uc?export=view&id={file_id}"
     except Exception as e:
-        st.error(f"Kunde inte ladda upp till Drive: {e}")
+        error_msg = traceback.format_exc()
+        add_log(f"DRIVE-FEL: {str(e)}\n{error_msg}")
+        st.error("Kunde inte ladda upp bilden. Se Admin-loggen.")
         return ""
 
 # --- ANSLUTNING & DATA ---
@@ -66,7 +87,8 @@ def load_data():
     try:
         data = conn.read(worksheet="Sheet1", ttl=0)
         return data.fillna("")
-    except:
+    except Exception as e:
+        add_log(f"Läsfel: {str(e)}")
         return pd.DataFrame(columns=["Enhetsfoto", "Modell", "Tillverkare", "Typ", "Färg", "Resurstagg", "Streckkod", "Serienummer", "Status", "Aktuell ägare", "Utlåningsdatum"])
 
 def save_data(df):
@@ -74,12 +96,14 @@ def save_data(df):
         df_to_save = df.fillna("").astype(str)
         conn.update(worksheet="Sheet1", data=df_to_save)
         st.cache_data.clear()
+        add_log("System: Lyckades spara till Sheets.")
         return True
     except Exception as e:
+        add_log(f"SKRIVFEL Sheets: {str(e)}")
         st.error(f"Skrivfel: {e}")
         return False
 
-# Session States
+# Initiera State
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
 if 'cart' not in st.session_state:
@@ -102,7 +126,6 @@ menu = st.sidebar.selectbox("Navigering", ["🔍 Sök & Låna", "➕ Registrera 
 # --- VY: SÖK & LÅNA ---
 if menu == "🔍 Sök & Låna":
     st.header("Sök & Låna")
-    
     search_query = st.text_input("Sök i inventariet...", placeholder="Skriv modell, märke, ID eller färg...")
     
     df = st.session_state.df
@@ -113,28 +136,23 @@ if menu == "🔍 Sök & Låna":
         for idx, row in results.iterrows():
             with st.container(border=True):
                 col_img, col_info, col_action = st.columns([1, 3, 1])
-                
                 with col_img:
                     if row['Enhetsfoto'] and str(row['Enhetsfoto']).startswith("http"):
-                        st.image(row['Enhetsfoto'], width=100)
+                        st.image(row['Enhetsfoto'], width=120)
                     else:
                         st.markdown("📷\n*Ingen bild*")
-                
                 with col_info:
                     st.markdown(f"### {row['Modell']}")
                     st.caption(f"{row['Tillverkare']} | ID: {row['Resurstagg']} | SN: {row['Serienummer']}")
-                    
                     if row['Status'] == 'Tillgänglig':
                         st.success(f"✅ {row['Status']}")
                     else:
                         st.error(f"🔴 Utlånad till: {row['Aktuell ägare']}")
-                
                 with col_action:
                     with st.popover("QR"):
                         qr_img = generate_qr(row['Resurstagg'])
                         st.image(qr_img, use_container_width=True)
                         st.download_button("Ladda ner", qr_img, file_name=f"QR_{row['Resurstagg']}.png", key=f"dl_{idx}")
-                    
                     if row['Status'] == 'Tillgänglig':
                         if st.button("🛒 Lägg till", key=f"add_{idx}"):
                             if row['Resurstagg'] not in [i['Resurstagg'] for i in st.session_state.cart]:
@@ -146,7 +164,6 @@ if menu == "🔍 Sök & Låna":
         st.sidebar.subheader("🛒 Lånekorg")
         for i, item in enumerate(st.session_state.cart):
             st.sidebar.caption(f"{item['Modell']} ({item['Resurstagg']})")
-        
         borrower_name = st.sidebar.text_input("Låntagarens namn")
         if st.sidebar.button("Slutför Lån", type="primary"):
             if borrower_name:
@@ -158,8 +175,6 @@ if menu == "🔍 Sök & Låna":
                     st.session_state.cart = []
                     st.success("Lån registrerat!")
                     st.rerun()
-            else:
-                st.sidebar.error("Namn krävs!")
 
 # --- VY: REGISTRERA NYTT ---
 elif menu == "➕ Registrera Nytt":
@@ -171,7 +186,7 @@ elif menu == "➕ Registrera Nytt":
         tillverkare = col1.text_input("Tillverkare")
         typ = col2.selectbox("Typ", ["Gitarr", "Bas", "Trummor", "Keyboard", "PA", "Kabel", "Övrigt"])
         färg = col1.text_input("Färg")
-        tag = col2.text_input("Resurstagg (ID)", help="Lämna tom för att generera automatiskt")
+        tag = col2.text_input("Resurstagg (ID)")
         
         uploaded_img = st.file_uploader("Ladda upp bild", type=['jpg', 'png'])
         cam_img = st.camera_input("Ta foto")
@@ -179,17 +194,14 @@ elif menu == "➕ Registrera Nytt":
         if st.form_submit_button("Registrera"):
             if modell and sn:
                 res_id = tag if tag else str(random.randint(100000, 999999))
-                
-                # Bildhantering: Ladda upp till Drive
                 image_url = ""
                 active_img = cam_img if cam_img else uploaded_img
                 if active_img:
-                    with st.spinner("Laddar upp bild till Google Drive..."):
+                    with st.spinner("Laddar upp till Drive..."):
                         image_url = upload_to_drive(active_img.getvalue(), f"{res_id}.jpg")
                 
                 new_row = {
-                    "Enhetsfoto": image_url,
-                    "Modell": modell, "Tillverkare": tillverkare, "Typ": typ,
+                    "Enhetsfoto": image_url, "Modell": modell, "Tillverkare": tillverkare, "Typ": typ,
                     "Färg": färg, "Resurstagg": res_id, "Streckkod": res_id,
                     "Serienummer": sn, "Status": "Tillgänglig", "Aktuell ägare": "", "Utlåningsdatum": ""
                 }
@@ -197,61 +209,58 @@ elif menu == "➕ Registrera Nytt":
                 if save_data(st.session_state.df):
                     st.success(f"Objekt {res_id} registrerat!")
             else:
-                st.error("Modell och Serienummer är tvingande!")
+                st.error("Modell och Serienummer krävs!")
 
 # --- VY: ÅTERLÄMNING ---
 elif menu == "🔄 Återlämning":
     st.header("Återlämning")
     loaned = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']
-    
     if not loaned.empty:
-        selected_items = st.multiselect("Välj instrument som lämnas tillbaka:", 
-                                        loaned.apply(lambda r: f"{r['Modell']} [{r['Resurstagg']}] - {r['Aktuell ägare']}", axis=1))
-        
-        if st.button("Markera som återlämnade", type="primary"):
+        selected_items = st.multiselect("Välj instrument:", loaned.apply(lambda r: f"{r['Modell']} [{r['Resurstagg']}]", axis=1))
+        if st.button("Markera som återlämnade"):
             for item in selected_items:
                 tag = item.split("[")[1].split("]")[0]
                 st.session_state.df.loc[st.session_state.df['Resurstagg'] == tag, ['Status', 'Aktuell ägare', 'Utlåningsdatum']] = ['Tillgänglig', '', '']
             if save_data(st.session_state.df):
-                st.success("Produkter återförda i lager!")
                 st.rerun()
-    else:
-        st.info("Inga produkter är för närvarande utlånade.")
 
 # --- VY: ADMIN ---
 elif menu == "⚙️ Admin":
-    st.header("Administration")
+    st.header("Administration & Logg")
     
+    st.subheader("Systemlogg (Felsökning)")
+    if st.session_state.error_log:
+        st.code("\n".join(st.session_state.error_log))
+        if st.button("Rensa logg"):
+            st.session_state.error_log = []
+            st.rerun()
+    else:
+        st.info("Inga fel registrerade.")
+
+    st.divider()
     c1, c2 = st.columns(2)
     csv_all = st.session_state.df.to_csv(index=False).encode('utf-8')
-    c1.download_button("📥 Exportera Lagersaldo (CSV)", csv_all, "lagersaldo.csv", "text/csv")
+    c1.download_button("📥 Exportera Lagersaldo", csv_all, "lagersaldo.csv", "text/csv")
     
-    loaned_df = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']
-    csv_loaned = loaned_df.to_csv(index=False).encode('utf-8')
-    c2.download_button("📥 Exportera Utlåningslista (CSV)", csv_loaned, "utlaning.csv", "text/csv")
+    if st.button("Tvinga omladdning från Sheets"):
+        st.cache_resource.clear()
+        st.session_state.df = load_data()
+        st.rerun()
     
-    st.divider()
-    st.write("Rådata från Sheets:")
     st.dataframe(st.session_state.df)
 
 # --- VY: INVENTERING ---
 elif menu == "📋 Inventering":
-    st.header("Årsinventering")
-    if 'inv_list' not in st.session_state:
-        st.session_state.inv_list = []
-    
-    inv_scan = st.text_input("Skanna/Sök produkt att lägga till i inventeringslistan")
+    st.header("Inventering")
+    if 'inv_list' not in st.session_state: st.session_state.inv_list = []
+    inv_scan = st.text_input("Skanna/Sök ID")
     if inv_scan:
         match = st.session_state.df[st.session_state.df['Resurstagg'] == inv_scan]
-        if not match.empty:
-            if inv_scan not in [i['Resurstagg'] for i in st.session_state.inv_list]:
-                st.session_state.inv_list.append(match.iloc[0].to_dict())
-                st.success(f"{match.iloc[0]['Modell']} tillagd!")
-    
-    st.write(f"Antal inventerade objekt: {len(st.session_state.inv_list)}")
+        if not match.empty and inv_scan not in [i['Resurstagg'] for i in st.session_state.inv_list]:
+            st.session_state.inv_list.append(match.iloc[0].to_dict())
+            st.success("Tillagd!")
+    st.write(f"Antal: {len(st.session_state.inv_list)}")
     if st.session_state.inv_list:
-        st.table(pd.DataFrame(st.session_state.inv_list)[['Modell', 'Resurstagg', 'Status']])
-    
-    if st.button("Spara inventeringsfil"):
-        inv_df = pd.DataFrame(st.session_state.inv_list)
-        st.download_button("Ladda ner inventeringsfil", inv_df.to_csv(index=False), "inventering_2024.csv")
+        st.table(pd.DataFrame(st.session_state.inv_list)[['Modell', 'Resurstagg']])
+        if st.button("Exportera Inventeringslista"):
+            st.download_button("Ladda ner CSV", pd.DataFrame(st.session_state.inv_list).to_csv(index=False), "inv.csv")
