@@ -3,155 +3,123 @@ from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import random
 
-# --- GRUNDINSTÄLLNINGAR ---
+# --- CONFIG ---
 st.set_page_config(page_title="InstrumentDB", layout="wide", page_icon="🎵")
 
 # --- ANSLUTNING ---
-# Vi använder st.cache_resource för att inte ansluta på nytt vid varje klick
 @st.cache_resource
 def get_connection():
-    try:
-        # Helt ren anslutning - den hittar själv "gsheets" i secrets
-        return st.connection("gsheets", type=GSheetsConnection)
-    except Exception as e:
-        st.error(f"Kopplingsfel: Kontrollera dina Secrets. Felkod: {e}")
-        return None
+    # Streamlit läser automatiskt från [connections.gsheets] i secrets
+    return st.connection("gsheets", type=GSheetsConnection)
 
 conn = get_connection()
 
-# --- DATAFUNKTIONER ---
 def load_data():
-    if conn:
-        try:
-            # Vi läser Sheet1. ttl=0 gör att vi alltid får färsk data vid refresh.
-            return conn.read(worksheet="Sheet1", ttl=0)
-        except Exception as e:
-            st.error(f"Kunde inte läsa kalkylbladet: {e}")
-            return pd.DataFrame(columns=["Modell", "Tillverkare", "Resurstagg", "Status", "Låntagare"])
-    return pd.DataFrame()
+    try:
+        # ttl=0 gör att vi inte cachar gammal data när vi sparar nytt
+        return conn.read(worksheet="Sheet1", ttl=0)
+    except Exception as e:
+        st.error(f"Kunde inte hämta data: {e}")
+        return pd.DataFrame(columns=["Modell", "Tillverkare", "Resurstagg", "Status", "Låntagare"])
 
 def save_data(df):
-    if conn:
-        try:
-            conn.update(worksheet="Sheet1", data=df)
-            st.toast("✅ Synkat med Google Sheets!", icon="☁️")
-            return True
-        except Exception as e:
-            st.error(f"Kunde inte spara: {e}")
-            return False
-    return False
+    try:
+        conn.update(worksheet="Sheet1", data=df)
+        st.cache_data.clear() # Tvinga omladdning
+        return True
+    except Exception as e:
+        st.error(f"Fel vid sparande: {e}")
+        return False
 
-# Initiera session state
+# Session State
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
 if 'cart' not in st.session_state:
     st.session_state.cart = []
 
-# --- SIDOMENY ---
+# --- UI ---
 st.sidebar.title("🎵 Musikinventering")
-menu = st.sidebar.radio("GÅ TILL:", ["🔍 Sök & Låna", "➕ Registrera Nytt", "🔄 Återlämning", "⚙️ Admin"])
+menu = st.sidebar.radio("MENY", ["🔍 Sök & Låna", "➕ Registrera Nytt", "🔄 Återlämning", "⚙️ Admin"])
 
-# --- VY: SÖK & LÅNA ---
+# --- SÖK & LÅNA ---
 if menu == "🔍 Sök & Låna":
-    st.title("Instrumentregister")
+    st.title("Sök Instrument")
     
     col1, col2 = st.columns([3, 1])
-    search = col1.text_input("Sök...", placeholder="Modell eller märke")
-    
-    if col2.button("🔄 Uppdatera lista"):
+    search = col1.text_input("Sök på modell, märke eller ID...")
+    if col2.button("🔄 Uppdatera"):
         st.session_state.df = load_data()
         st.rerun()
 
     df = st.session_state.df
     if not df.empty:
-        # Filtrering
         mask = df.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
-        display_df = df[mask]
+        results = df[mask]
 
-        for idx, row in display_df.iterrows():
-            with st.expander(f"{row['Modell']} ({row['Tillverkare']}) - {row['Status']}"):
-                st.write(f"**ID:** {row['Resurstagg']}")
-                
+        for idx, row in results.iterrows():
+            with st.expander(f"{row['Modell']} - {row['Status']}"):
+                st.write(f"**Märke:** {row['Tillverkare']} | **ID:** {row['Resurstagg']}")
                 if row['Status'] == 'Utlånad':
-                    st.warning(f"⚠️ Utlånad till: {row['Låntagare']}")
+                    st.warning(f"Lånad av: {row['Låntagare']}")
                 else:
-                    if st.button("Lägg i lånekorg", key=f"btn_{idx}"):
+                    if st.button("Lägg i lånekorg", key=f"add_{row['Resurstagg']}"):
                         if not any(item['Resurstagg'] == row['Resurstagg'] for item in st.session_state.cart):
                             st.session_state.cart.append(row.to_dict())
-                            st.toast(f"{row['Modell']} tillagd!")
-                        else:
-                            st.warning("Redan i korgen")
+                            st.toast("Tillagd!")
 
-    # Varukorgs-sektion
     if st.session_state.cart:
         st.divider()
         st.subheader("🛒 Din lånekorg")
-        for i, item in enumerate(st.session_state.cart):
-            st.info(f"{item['Modell']} ({item['Resurstagg']})")
+        for item in st.session_state.cart:
+            st.write(f"• {item['Modell']} ({item['Resurstagg']})")
         
-        namn = st.text_input("Vem ska låna dessa?")
-        col_c1, col_c2 = st.columns(2)
-        
-        if col_c1.button("BEKRÄFTA LÅN", type="primary") and namn:
+        borrower = st.text_input("Vem lånar?")
+        if st.button("BEKRÄFTA LÅN", type="primary") and borrower:
             for item in st.session_state.cart:
-                st.session_state.df.loc[st.session_state.df['Resurstagg'] == item['Resurstagg'], ['Status', 'Låntagare']] = ['Utlånad', namn]
+                st.session_state.df.loc[st.session_state.df['Resurstagg'] == item['Resurstagg'], ['Status', 'Låntagare']] = ['Utlånad', borrower]
             if save_data(st.session_state.df):
                 st.session_state.cart = []
+                st.success("Lån registrerat!")
                 st.rerun()
-        
-        if col_c2.button("Töm korg"):
-            st.session_state.cart = []
-            st.rerun()
 
-# --- VY: REGISTRERA NYTT ---
+# --- REGISTRERA NYTT ---
 elif menu == "➕ Registrera Nytt":
-    st.title("Ny utrustning")
-    
-    with st.form("new_instrument"):
+    st.title("Registrera ny utrustning")
+    with st.form("add_form"):
         m = st.text_input("Modell *")
         t = st.text_input("Tillverkare")
-        tag = st.text_input("ID / Resurstagg (lämna tom för auto)")
+        tag = st.text_input("Resurstagg (valfritt)")
+        img = st.camera_input("Ta bild")
         
-        img_file = st.camera_input("Ta bild")
-        
-        if st.form_submit_button("SPARA"):
+        if st.form_submit_button("Spara"):
             if m:
-                new_tag = tag if tag else str(random.randint(10000, 99999))
-                new_row = pd.DataFrame([{
-                    "Modell": m, "Tillverkare": t, "Resurstagg": new_tag, 
-                    "Status": "Tillgänglig", "Låntagare": ""
-                }])
+                new_tag = tag if tag else str(random.randint(1000, 9999))
+                new_row = pd.DataFrame([{"Modell": m, "Tillverkare": t, "Resurstagg": new_tag, "Status": "Tillgänglig", "Låntagare": ""}])
                 st.session_state.df = pd.concat([st.session_state.df, new_row], ignore_index=True)
                 if save_data(st.session_state.df):
-                    st.success(f"{m} sparad!")
+                    st.success(f"{m} tillagd i listan!")
             else:
-                st.error("Modell krävs.")
+                st.error("Modellnamn krävs.")
 
-# --- VY: ÅTERLÄMNING ---
+# --- ÅTERLÄMNING ---
 elif menu == "🔄 Återlämning":
     st.title("Återlämning")
-    df = st.session_state.df
-    loaned = df[df['Status'] == 'Utlånad']
-    
+    loaned = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']
     if not loaned.empty:
-        selected_label = st.selectbox("Välj föremål att lämna tillbaka:", 
-                                     loaned.apply(lambda r: f"{r['Modell']} ({r['Låntagare']})", axis=1))
-        
-        if st.button("CHECK IN"):
-            # Hitta rätt rad baserat på urvalet
-            idx = loaned.index[loaned.apply(lambda r: f"{r['Modell']} ({r['Låntagare']})", axis=1) == selected_label][0]
-            st.session_state.df.at[idx, 'Status'] = 'Tillgänglig'
-            st.session_state.df.at[idx, 'Låntagare'] = ''
+        item_to_return = st.selectbox("Välj föremål:", loaned['Modell'] + " [" + loaned['Resurstagg'] + "]")
+        if st.button("Markera som återlämnad"):
+            tag = item_to_return.split("[")[1].split("]")[0]
+            st.session_state.df.loc[st.session_state.df['Resurstagg'] == tag, ['Status', 'Låntagare']] = ['Tillgänglig', '']
             if save_data(st.session_state.df):
                 st.rerun()
     else:
-        st.info("Inga lånade instrument.")
+        st.info("Inga lånade föremål just nu.")
 
-# --- VY: ADMIN ---
+# --- ADMIN ---
 elif menu == "⚙️ Admin":
-    st.title("Admin")
+    st.title("Admin-översikt")
     st.dataframe(st.session_state.df, use_container_width=True)
-    if st.button("Hård omstart (Rensa cache)"):
+    if st.button("Rensa allt och ladda om"):
         st.cache_resource.clear()
         st.session_state.df = load_data()
         st.rerun()
