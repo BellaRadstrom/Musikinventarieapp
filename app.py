@@ -1,85 +1,136 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
-from datetime import datetime
+import random
 
-# --- CONFIGURATION ---
-st.set_page_config(page_title="Musik-Inventering", layout="wide", page_icon="🎸")
+# --- GRUNDINSTÄLLNINGAR ---
+st.set_page_config(page_title="InstrumentDB", layout="wide", page_icon="🎵")
 
-st.title("🎸 Musik-Inventering")
-st.markdown("Hantera instrument och utrustning smidigt.")
+# --- ANSLUTNING (AUTOMATISK - RÖR EJ) ---
+def get_conn():
+    try:
+        connection = st.connection("gsheets", type=GSheetsConnection)
+        url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+        return connection, url
+    except Exception as e:
+        st.error(f"Systemfel vid start: {e}")
+        return None, None
 
-# --- CONNECTION ---
-# Vi kör helt rent enligt din önskan för att låta Streamlit Cloud sköta allt via Secrets
-conn = st.connection("gsheets", type=GSheetsConnection)
+conn, spreadsheet_url = get_conn()
 
-def get_data():
-    return conn.read(worksheet="Sheet1", ttl="0") # ttl="0" för att alltid hämta färskt vid refresh
+# --- DATAFUNKTIONER ---
+def load_data():
+    if conn and spreadsheet_url:
+        try:
+            return conn.read(spreadsheet=spreadsheet_url, worksheet="Sheet1", ttl="0s")
+        except:
+            return pd.DataFrame(columns=["Modell", "Tillverkare", "Resurstagg", "Status", "Låntagare"])
+    return pd.DataFrame()
 
-# --- UI NAVIGATION ---
-tabs = ["Sök & Låna", "Registrera Nytt", "Återlämning", "Admin"]
-active_tab = st.sidebar.radio("Meny", tabs)
+def save_data(df):
+    if conn and spreadsheet_url:
+        try:
+            conn.update(spreadsheet=spreadsheet_url, worksheet="Sheet1", data=df)
+            st.toast("✅ Synkat med Google Sheets!", icon="☁️")
+            return True
+        except Exception as e:
+            st.error(f"Kunde inte spara: {e}")
+            return False
 
-df = get_data()
+if 'df' not in st.session_state:
+    st.session_state.df = load_data()
+if 'cart' not in st.session_state:
+    st.session_state.cart = []
 
-# --- TAB: SÖK & LÅNA ---
-if active_tab == "Sök & Låna":
-    st.header("🔍 Sök i inventariet")
-    search_query = st.text_input("Sök på namn eller kategori")
+# --- SIDOMENY ---
+st.sidebar.title("🎵 Musikinventering")
+menu = st.sidebar.radio("GÅ TILL:", ["🔍 Sök & Låna", "➕ Registrera Nytt", "🔄 Återlämning", "⚙️ Admin"])
+
+# --- VY: SÖK & LÅNA ---
+if menu == "🔍 Sök & Låna":
+    st.title("Instrumentregister")
+    col1, col2 = st.columns([3, 1])
+    search = col1.text_input("Sök...", placeholder="Modell eller märke")
+    if col2.button("🔄 Uppdatera"):
+        st.session_state.df = load_data()
+        st.rerun()
+
+    df = st.session_state.df
+    if not df.empty:
+        mask = df.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
+        for idx, row in df[mask].iterrows():
+            with st.expander(f"{row['Modell']} - {row['Status']}"):
+                st.write(f"ID: {row['Resurstagg']} | Märke: {row['Tillverkare']}")
+                if row['Status'] == 'Utlånad':
+                    st.warning(f"Lånad av: {row['Låntagare']}")
+                else:
+                    if st.button("Lägg i lånekorg", key=f"btn_{idx}"):
+                        st.session_state.cart.append(row.to_dict())
+                        st.toast("Tillagd!")
+
+    if st.session_state.cart:
+        st.divider()
+        st.subheader("🛒 Din lånekorg")
+        for item in st.session_state.cart:
+            st.info(item['Modell'])
+        namn = st.text_input("Vem ska låna?")
+        if st.button("BEKRÄFTA LÅN", type="primary") and namn:
+            for item in st.session_state.cart:
+                st.session_state.df.loc[st.session_state.df['Resurstagg'] == item['Resurstagg'], ['Status', 'Låntagare']] = ['Utlånad', namn]
+            if save_data(st.session_state.df):
+                st.session_state.cart = []
+                st.rerun()
+
+# --- VY: REGISTRERA NYTT (MED KAMERA) ---
+elif menu == "➕ Registrera Nytt":
+    st.title("Ny utrustning")
+    st.write("Fyll i uppgifter och ta en bild på instrumentet.")
     
-    if search_query:
-        filtered_df = df[df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
-    else:
-        filtered_df = df
-
-    st.dataframe(filtered_df, use_container_width=True)
-    
-    # Enkel låne-logik (demonstration)
-    with st.expander("Boka/Låna objekt"):
-        item_to_borrow = st.selectbox("Välj objekt", df['Namn'].tolist() if 'Namn' in df.columns else [])
-        user_name = st.text_input("Ditt namn")
-        if st.button("Registrera lån"):
-            st.success(f"Lån registrerat för {item_to_borrow} till {user_name}!")
-            # Här lägger vi till logik för att skriva tillbaka till Sheets senare
-
-# --- TAB: REGISTRERA NYTT ---
-elif active_tab == "Registrera Nytt":
-    st.header("➕ Lägg till ny utrustning")
-    
-    with st.form("new_item_form"):
-        name = st.text_input("Namn på instrument/utrustning")
-        category = st.selectbox("Kategori", ["Stränginstrument", "Trummor", "PA/Ljud", "Kablar", "Övrigt"])
+    with st.form("new_instrument"):
+        m = st.text_input("Modell *")
+        t = st.text_input("Tillverkare")
+        tag = st.text_input("ID / Resurstagg")
         
-        # Kamera- och bilduppladdning
-        img_file = st.camera_input("Ta en bild")
-        upload_file = st.file_uploader("Eller ladda upp en bild", type=['jpg', 'png'])
+        # Kamera och filuppladdning
+        img_file = st.camera_input("Ta bild med kameran")
+        upload_file = st.file_uploader("Eller ladda upp en bild", type=['jpg', 'png', 'jpeg'])
         
-        submitted = st.form_submit_button("Spara i Google Sheets")
+        submitted = st.form_submit_button("SPARA I MOLNET")
         
         if submitted:
-            # Skapa ny rad
-            new_row = pd.DataFrame([{
-                "Namn": name, 
-                "Kategori": category, 
-                "Datum": datetime.now().strftime("%Y-%m-%d"),
-                "Status": "Tillgänglig"
-            }])
-            updated_df = pd.concat([df, new_row], ignore_index=True)
-            conn.update(worksheet="Sheet1", data=updated_df)
-            st.success("✅ Klart! Inventariet är uppdaterat.")
+            if m:
+                # Skapa ny rad
+                new_row = pd.DataFrame([{
+                    "Modell": m, 
+                    "Tillverkare": t, 
+                    "Resurstagg": tag if tag else str(random.randint(1000,9999)), 
+                    "Status": "Tillgänglig", 
+                    "Låntagare": ""
+                }])
+                st.session_state.df = pd.concat([st.session_state.df, new_row], ignore_index=True)
+                
+                if save_data(st.session_state.df):
+                    st.success(f"Instrumentet {m} har sparats i Google Sheets!")
+                    if img_file or upload_file:
+                        st.write("📷 Bilden har registrerats i sessionen.")
+            else:
+                st.error("Du måste minst ange en modell.")
 
-# --- TAB: ÅTERLÄMNING ---
-elif active_tab == "Återlämning":
-    st.header("🔄 Återlämning")
-    # Här kan man lista lånade objekt och ha en knapp för att "checka in" dem
-    st.info("Här listas objekt som är markerade som 'Utlånade'.")
+# --- VY: ÅTERLÄMNING ---
+elif menu == "🔄 Återlämning":
+    st.title("Lämna tillbaka")
+    loaned = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']
+    if not loaned.empty:
+        selected = st.selectbox("Välj föremål:", loaned['Modell'] + " [" + loaned['Resurstagg'] + "]")
+        if st.button("BEKRÄFTA ÅTERLÄMNING"):
+            tag = selected.split("[")[1].split("]")[0]
+            st.session_state.df.loc[st.session_state.df['Resurstagg'] == tag, ['Status', 'Låntagare']] = ['Tillgänglig', '']
+            if save_data(st.session_state.df):
+                st.rerun()
+    else:
+        st.info("Inga lånade instrument just nu.")
 
-# --- TAB: ADMIN ---
-elif active_tab == "Admin":
-    st.header("⚙️ Administratörsvy")
-    st.write("Fullständig tabellvy:")
-    st.dataframe(df)
-    
-    if st.button("Rensa Cache"):
-        st.cache_data.clear()
-        st.rerun()
+# --- VY: ADMIN ---
+elif menu == "⚙️ Admin":
+    st.title("Systemvy")
+    st.dataframe(st.session_state.df, use_container_width=True)
