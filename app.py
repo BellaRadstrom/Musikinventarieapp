@@ -40,16 +40,19 @@ def upload_to_drive(file_content, filename):
     try:
         creds_info = st.secrets["connections"]["gsheets"]
         credentials = service_account.Credentials.from_service_account_info(creds_info)
+        # Vi lägger till 'delegated_user' om det vore Workspace, men för privat:
         drive_service = build('drive', 'v3', credentials=credentials)
 
+        # Vi skapar filen utan 'parents' först för att se om den accepterar det,
+        # eller så använder vi 'fields' för att tvinga fram rätt ID.
         file_metadata = {
             'name': filename,
             'parents': [FOLDER_ID]
         }
         
-        media = MediaIoBaseUpload(BytesIO(file_content), mimetype='image/jpeg')
+        media = MediaIoBaseUpload(BytesIO(file_content), mimetype='image/jpeg', resumable=True)
         
-        # supportsAllDrives=True hjälper mot kvota-problem i delade miljöer
+        # Vi provar att använda 'resumable=True' vilket ibland hanterar kvota bättre
         file = drive_service.files().create(
             body=file_metadata,
             media_body=media,
@@ -59,21 +62,17 @@ def upload_to_drive(file_content, filename):
         
         file_id = file.get('id')
         
-        # Sätt rättigheter så bilden kan visas i appen
-        try:
-            drive_service.permissions().create(
-                fileId=file_id,
-                body={'type': 'anyone', 'role': 'reader'},
-                supportsAllDrives=True
-            ).execute()
-        except:
-            add_log("Kunde inte sätta publika rättigheter, men filen är uppladdad.")
-
+        # Sätt rättigheter
+        drive_service.permissions().create(
+            fileId=file_id,
+            body={'type': 'anyone', 'role': 'reader'},
+            supportsAllDrives=True
+        ).execute()
+        
         return f"https://drive.google.com/uc?export=view&id={file_id}"
     except Exception as e:
-        error_msg = traceback.format_exc()
-        add_log(f"DRIVE-FEL: {str(e)}\n{error_msg}")
-        st.error("Kunde inte ladda upp bilden. Se Admin-loggen.")
+        # Om det fortfarande skiter sig, logga exakt vad Google svarar
+        add_log(f"DRIVE-FEL: {str(e)}")
         return ""
 
 # --- ANSLUTNING & DATA ---
@@ -264,3 +263,4 @@ elif menu == "📋 Inventering":
         st.table(pd.DataFrame(st.session_state.inv_list)[['Modell', 'Resurstagg']])
         if st.button("Exportera Inventeringslista"):
             st.download_button("Ladda ner CSV", pd.DataFrame(st.session_state.inv_list).to_csv(index=False), "inv.csv")
+
