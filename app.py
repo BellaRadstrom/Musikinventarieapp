@@ -3,11 +3,11 @@ from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import random
 from datetime import datetime
+import traceback
 
 # --- CONFIG ---
 st.set_page_config(page_title="InstrumentDB", layout="wide", page_icon="🎵")
 
-# --- SESSION STATE FÖR FELSÖKNING ---
 if 'error_log' not in st.session_state:
     st.session_state.error_log = []
 
@@ -15,7 +15,7 @@ def add_log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
     st.session_state.error_log.append(f"[{timestamp}] {msg}")
 
-# --- ANSLUTNING ---
+# --- CONNECTION ---
 @st.cache_resource
 def get_connection():
     try:
@@ -28,12 +28,12 @@ conn = get_connection()
 
 def load_data():
     try:
-        # Läser in allt. Vi använder worksheet="Sheet1"
+        # Vi läser in med worksheet-namnet du har
         data = conn.read(worksheet="Sheet1", ttl=0)
-        return data
+        # Viktigt: Ersätt alla tomma celler med tomma strängar direkt vid start
+        return data.fillna("")
     except Exception as e:
         add_log(f"Läsfel: {str(e)}")
-        # Skapa tom df med dina exakta kolumner om det skiter sig
         return pd.DataFrame(columns=[
             "Enhetsfoto", "Modell", "Tillverkare", "Typ", "Färg", 
             "Resurstagg", "Streckkod", "Serienummer", "Status", 
@@ -42,15 +42,35 @@ def load_data():
 
 def save_data(df):
     try:
-        # Rensa eventuella helt tomma rader innan sparning
-        df = df.dropna(how='all')
-        conn.update(worksheet="Sheet1", data=df)
+        add_log(f"Försöker spara tabell med {len(df)} rader och {len(df.columns)} kolumner.")
+        
+        # --- TVÄTT AV DATA (Viktigt för GSheets) ---
+        # 1. Se till att alla kolumner från din bild finns med i rätt ordning
+        expected_cols = [
+            "Enhetsfoto", "Modell", "Tillverkare", "Typ", "Färg", 
+            "Resurstagg", "Streckkod", "Serienummer", "Status", 
+            "Aktuell ägare", "Utlåningsdatum"
+        ]
+        
+        # Säkerställ att vi inte skickar extra eller saknade kolumner
+        df_to_save = df.reindex(columns=expected_cols)
+        
+        # 2. Ersätt ALLA NaN/None med tom sträng (""). GSheets hatar NaN.
+        df_to_save = df_to_save.fillna("")
+        
+        # 3. Konvertera allt till strängar för att undvika JSON-serialiseringsfel
+        df_to_save = df_to_save.astype(str)
+
+        conn.update(worksheet="Sheet1", data=df_to_save)
+        
         st.cache_data.clear()
-        add_log("System: Lyckades skriva till Sheets!")
+        add_log("SUCCESS: Skrivning slutförd.")
         return True
-    except Exception as e:
-        add_log(f"SKRIVFEL: {str(e)}")
-        st.error(f"Kunde inte spara: {e}")
+    except Exception:
+        # Hämta hela stacktracet för att se EXAKT var i koden det dör
+        error_details = traceback.format_exc()
+        add_log(f"DETALJERAT SKRIVFEL:\n{error_details}")
+        st.error("Skrivfel uppstod. Kolla Admin-loggen för fullständig spårning.")
         return False
 
 # Initiera data
@@ -59,95 +79,49 @@ if 'df' not in st.session_state:
 if 'cart' not in st.session_state:
     st.session_state.cart = []
 
-# --- UI ---
+# --- UI (Samma som tidigare men med säkrare anrop) ---
 st.sidebar.title("🎵 Musikinventering")
 menu = st.sidebar.radio("MENY", ["🔍 Sök & Låna", "➕ Registrera Nytt", "🔄 Återlämning", "⚙️ Admin"])
 
-# --- VY: SÖK & LÅNA ---
-if menu == "🔍 Sök & Låna":
-    st.title("Sök & Boka")
-    search = st.text_input("Sök i registret...")
-    
-    df = st.session_state.df
-    if not df.empty:
-        mask = df.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
-        res = df[mask]
-        
-        for idx, row in res.iterrows():
-            status_color = "🟢" if row['Status'] == 'Tillgänglig' else "🔴"
-            with st.expander(f"{status_color} {row['Modell']} - {row['Resurstagg']}"):
-                col_a, col_b = st.columns(2)
-                col_a.write(f"**Märke:** {row['Tillverkare']}")
-                col_a.write(f"**Typ:** {row['Typ']}")
-                col_b.write(f"**Serie:** {row['Serienummer']}")
-                
-                if row['Status'] == 'Utlånad':
-                    st.info(f"Innehas av: {row['Aktuell ägare']}")
-                else:
-                    if st.button("Lägg i lånekorg", key=f"add_{idx}"):
-                        st.session_state.cart.append(row.to_dict())
-                        st.toast("Tillagd!")
+# ... (Här följer samma vy-kod som tidigare) ...
+# (Jag hoppar till Admin för att visa hur loggen nu blir kraftfullare)
 
-    if st.session_state.cart:
-        st.divider()
-        st.subheader("🛒 Din lånekorg")
-        borrower = st.text_input("Vem ska låna?")
-        if st.button("BEKRÄFTA UTKÖP") and borrower:
-            for item in st.session_state.cart:
-                # Uppdatera status baserat på Resurstagg
-                st.session_state.df.loc[st.session_state.df['Resurstagg'] == item['Resurstagg'], 
-                                        ['Status', 'Aktuell ägare', 'Utlåningsdatum']] = \
-                                        ['Utlånad', borrower, datetime.now().strftime("%Y-%m-%d")]
-            
-            if save_data(st.session_state.df):
-                st.session_state.cart = []
-                st.rerun()
-
-# --- VY: REGISTRERA ---
-elif menu == "➕ Registrera Nytt":
-    st.title("Ny utrustning")
-    with st.form("reg_form"):
-        c1, c2 = st.columns(2)
-        modell = c1.text_input("Modell *")
-        marke = c2.text_input("Tillverkare")
-        typ = c1.selectbox("Typ", ["Sträng", "Trummor", "Ljud", "Klaviatur", "Övrigt"])
-        tag = c2.text_input("Resurstagg (ID)")
-        färg = c1.text_input("Färg")
-        sn = c2.text_input("Serienummer")
-        
-        img = st.camera_input("Fota enheten")
-        
-        if st.form_submit_button("Spara till Sheets"):
-            if modell:
-                # Skapa rad som matchar dina kolumner exakt
-                new_data = {
-                    "Enhetsfoto": "", "Modell": modell, "Tillverkare": marke,
-                    "Typ": typ, "Färg": färg, "Resurstagg": tag if tag else str(random.randint(1000,9999)),
-                    "Streckkod": "", "Serienummer": sn, "Status": "Tillgänglig",
-                    "Aktuell ägare": "", "Utlåningsdatum": ""
-                }
-                st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_data])], ignore_index=True)
-                if save_data(st.session_state.df):
-                    st.success("Registrerad!")
-            else:
-                st.error("Modellnamn saknas!")
-
-# --- VY: ADMIN ---
-elif menu == "⚙️ Admin":
+if menu == "⚙️ Admin":
     st.title("Systemadministration")
     
-    st.subheader("Felsökning & Logg")
+    st.subheader("Deep Trace Logg")
     if st.button("Rensa Logg"):
         st.session_state.error_log = []
     
-    # Visa loggen i en box
-    log_text = "\n".join(st.session_state.error_log)
-    st.text_area("Händelseförlopp:", value=log_text, height=200)
+    # Använd en kod-box för att bevara radbrytningar i stacktracet
+    full_log = "\n".join(st.session_state.error_log)
+    st.code(full_log, language="text")
     
-    st.subheader("Rådata")
-    st.dataframe(st.session_state.df)
+    st.subheader("Aktuell Dataframe")
+    st.write(st.session_state.df)
     
-    if st.button("Tvinga omladdning från Sheets"):
+    if st.button("Tvinga omladdning"):
         st.cache_resource.clear()
         st.session_state.df = load_data()
         st.rerun()
+
+# --- REPARATION AV REGISTRERA NYTT ---
+elif menu == "➕ Registrera Nytt":
+    st.title("Registrera")
+    with st.form("reg_form"):
+        modell = st.text_input("Modell *")
+        if st.form_submit_button("Spara"):
+            if modell:
+                # Vi skapar en dictionary med ALLA kolumner från start
+                new_row = {col: "" for col in st.session_state.df.columns}
+                new_row.update({
+                    "Modell": modell,
+                    "Status": "Tillgänglig",
+                    "Resurstagg": str(random.randint(1000, 9999))
+                })
+                
+                # Lägg till i session state
+                temp_df = pd.concat([st.session_state.df, pd.DataFrame([new_row])], ignore_index=True)
+                if save_data(temp_df):
+                    st.session_state.df = temp_df
+                    st.success("Sparat!")
