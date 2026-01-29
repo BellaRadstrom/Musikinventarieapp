@@ -145,49 +145,45 @@ if menu == "🔍 Sök & Låna":
                     st.session_state.cart = []
                     st.rerun()
 
-# --- VY: REGISTRERA NYTT ---
-elif menu == "➕ Registrera Nytt":
-    st.header("Ny registrering")
-    with st.form("reg_form", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        modell = c1.text_input("Modell *")
-        sn = c2.text_input("Serienummer *")
-        tillverkare = c1.text_input("Tillverkare")
-        typ = c2.selectbox("Typ", ["Gitarr", "Bas", "Trummor", "Keyboard", "PA", "Kabel", "Övrigt"])
-        tag = c2.text_input("Resurstagg (ID)")
+# --- I SEKTIONEN: ➕ Registrera Nytt ---
+if st.form_submit_button("Spara till systemet"):
+    if modell and sn:
+        res_id = tag if tag else str(random.randint(100000, 999999))
         
-        up_img = st.file_uploader("Ladda upp bild", type=['jpg', 'png'])
-        cam_img = st.camera_input("Ta foto")
+        # Konvertera bild till Base64-text
+        image_base64 = ""
+        active_img = cam_img if cam_img else up_img
+        if active_img:
+            image_base64 = process_image_to_base64(active_img)
+            # Felsökning: Visar om strängen skapades (ta bort sen om du vill)
+            if image_base64:
+                st.success("Bilden har konverterats korrekt!")
         
-        if st.form_submit_button("Spara till systemet"):
-            if modell and sn:
-                res_id = tag if tag else str(random.randint(100000, 999999))
-                
-                # Konvertera bild till Base64-text
-                image_base64 = ""
-                active_img = cam_img if cam_img else up_img
-                if active_img:
-                    image_base64 = process_image_to_base64(active_img)
-                
-                new_row = {
-                    "Enhetsfoto": image_base64,
-                    "Modell": modell, 
-                    "Tillverkare": tillverkare,
-                    "Serienummer": sn, 
-                    "Typ": typ, 
-                    "Resurstagg": res_id, 
-                    "Streckkod": res_id,
-                    "Status": "Tillgänglig",
-                    "Aktuell ägare": "",
-                    "Utlåningsdatum": ""
-                }
-                st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_row])], ignore_index=True)
-                if save_data(st.session_state.df):
-                    st.success(f"Objekt {res_id} registrerat!")
-                    st.rerun()
-            else:
-                st.error("Modell och Serienummer krävs!")
-
+        # Skapa den nya raden - VIKTIGT: Namnen här MÅSTE matcha dina rubriker i Sheets
+        new_row = {
+            "Enhetsfoto": image_base64, 
+            "Modell": modell, 
+            "Tillverkare": tillverkare,
+            "Typ": typ,
+            "Resurstagg": res_id, 
+            "Streckkod": res_id,
+            "Serienummer": sn, 
+            "Status": "Tillgänglig",
+            "Aktuell ägare": "",
+            "Utlåningsdatum": ""
+        }
+        
+        # Lägg till i lokala listan
+        new_df = pd.DataFrame([new_row])
+        st.session_state.df = pd.concat([st.session_state.df, new_df], ignore_index=True)
+        
+        # Spara till Sheets
+        if save_data(st.session_state.df):
+            st.success(f"Objekt {res_id} registrerat i Sheets!")
+            st.rerun()
+    else:
+        st.error("Modell och Serienummer krävs!")
+        
 # --- VY: ÅTERLÄMNING ---
 elif menu == "🔄 Återlämning":
     st.header("Återlämning")
@@ -241,3 +237,4 @@ elif menu == "📋 Inventering":
         st.table(pd.DataFrame(st.session_state.inv_list)[['Modell', 'Resurstagg']])
         if st.button("Exportera Inventeringslista"):
             st.download_button("Ladda ner CSV", pd.DataFrame(st.session_state.inv_list).to_csv(index=False), "inv.csv")
+
