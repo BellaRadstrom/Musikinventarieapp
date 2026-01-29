@@ -7,8 +7,17 @@ import qrcode
 from io import BytesIO
 from PIL import Image
 
+# Google Drive API Importer
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
+from google.oauth2 import service_account
+
 # --- CONFIG ---
 st.set_page_config(page_title="Musik-Inventering Pro", layout="wide", page_icon="🎸")
+
+# --- DRIVE KONFIGURATION ---
+# Ditt specifika Mapp-ID
+FOLDER_ID = "1KDIg6_7MmOrRRwA1MwLiePVAwbqG60aR"
 
 # --- CSS FÖR KNAPPAR OCH LAYOUT ---
 st.markdown("""
@@ -17,6 +26,34 @@ st.markdown("""
     .stExpander { border: 1px solid #f0f2f6; border-radius: 10px; margin-bottom: 10px; }
     </style>
     """, unsafe_allow_html=True)
+
+# --- HJÄLPFUNKTION: DRIVE UPPLADDNING ---
+def upload_to_drive(file_content, filename):
+    try:
+        # Använder samma credentials som redan finns i din secrets för GSheets
+        creds_info = st.secrets["connections"]["gsheets"]
+        credentials = service_account.Credentials.from_service_account_info(creds_info)
+        drive_service = build('drive', 'v3', credentials=credentials)
+
+        file_metadata = {
+            'name': filename,
+            'parents': [FOLDER_ID]
+        }
+        
+        media = MediaIoBaseUpload(BytesIO(file_content), mimetype='image/jpeg')
+        
+        file = drive_service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id'
+        ).execute()
+        
+        file_id = file.get('id')
+        # Skapar en länk som Streamlit kan visa som bild direkt
+        return f"https://drive.google.com/uc?export=view&id={file_id}"
+    except Exception as e:
+        st.error(f"Kunde inte ladda upp till Drive: {e}")
+        return ""
 
 # --- ANSLUTNING & DATA ---
 @st.cache_resource
@@ -48,7 +85,7 @@ if 'df' not in st.session_state:
 if 'cart' not in st.session_state:
     st.session_state.cart = []
 
-# --- HJÄLPFUNKTIONER ---
+# --- HJÄLPFUNKTION: QR-KOD ---
 def generate_qr(data):
     qr = qrcode.QRCode(version=1, box_size=10, border=2)
     qr.add_data(data)
@@ -62,45 +99,37 @@ def generate_qr(data):
 st.sidebar.title("🎸 InstrumentDB")
 menu = st.sidebar.selectbox("Navigering", ["🔍 Sök & Låna", "➕ Registrera Nytt", "🔄 Återlämning", "📋 Inventering", "⚙️ Admin"])
 
-# --- VY: SÖK & LÅNA (Uppdaterad med miniatyrer) ---
+# --- VY: SÖK & LÅNA ---
 if menu == "🔍 Sök & Låna":
     st.header("Sök & Låna")
     
-    # Sökfält för alla kolumner
     search_query = st.text_input("Sök i inventariet...", placeholder="Skriv modell, märke, ID eller färg...")
     
     df = st.session_state.df
     if not df.empty:
-        # Söklogik
         mask = df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)
         results = df[mask]
 
         for idx, row in results.iterrows():
-            # Skapa en visuell ram (container) för varje produkt
             with st.container(border=True):
-                # Dela upp i kolumner: Bild | Info | Knappar
                 col_img, col_info, col_action = st.columns([1, 3, 1])
                 
                 with col_img:
-                    # Kontrollera om det finns en bild-URL eller data
                     if row['Enhetsfoto'] and str(row['Enhetsfoto']).startswith("http"):
-                        st.image(row['Enhetsfoto'], width=80)
+                        st.image(row['Enhetsfoto'], width=100)
                     else:
-                        # Placeholder om bild saknas (ikon istället för tom yta)
                         st.markdown("📷\n*Ingen bild*")
                 
                 with col_info:
                     st.markdown(f"### {row['Modell']}")
                     st.caption(f"{row['Tillverkare']} | ID: {row['Resurstagg']} | SN: {row['Serienummer']}")
                     
-                    # Status-tagg
                     if row['Status'] == 'Tillgänglig':
                         st.success(f"✅ {row['Status']}")
                     else:
                         st.error(f"🔴 Utlånad till: {row['Aktuell ägare']}")
                 
                 with col_action:
-                    # QR-knapp och Låne-knapp
                     with st.popover("QR"):
                         qr_img = generate_qr(row['Resurstagg'])
                         st.image(qr_img, use_container_width=True)
@@ -112,7 +141,6 @@ if menu == "🔍 Sök & Låna":
                                 st.session_state.cart.append(row.to_dict())
                                 st.toast(f"{row['Modell']} i korgen!")
 
-    # LÅNEKORG (Flytande sektion)
     if st.session_state.cart:
         st.sidebar.divider()
         st.sidebar.subheader("🛒 Lånekorg")
@@ -151,8 +179,16 @@ elif menu == "➕ Registrera Nytt":
         if st.form_submit_button("Registrera"):
             if modell and sn:
                 res_id = tag if tag else str(random.randint(100000, 999999))
+                
+                # Bildhantering: Ladda upp till Drive
+                image_url = ""
+                active_img = cam_img if cam_img else uploaded_img
+                if active_img:
+                    with st.spinner("Laddar upp bild till Google Drive..."):
+                        image_url = upload_to_drive(active_img.getvalue(), f"{res_id}.jpg")
+                
                 new_row = {
-                    "Enhetsfoto": "Ja" if (uploaded_img or cam_img) else "Nej",
+                    "Enhetsfoto": image_url,
                     "Modell": modell, "Tillverkare": tillverkare, "Typ": typ,
                     "Färg": färg, "Resurstagg": res_id, "Streckkod": res_id,
                     "Serienummer": sn, "Status": "Tillgänglig", "Aktuell ägare": "", "Utlåningsdatum": ""
@@ -187,7 +223,6 @@ elif menu == "⚙️ Admin":
     st.header("Administration")
     
     c1, c2 = st.columns(2)
-    # Exportfunktioner
     csv_all = st.session_state.df.to_csv(index=False).encode('utf-8')
     c1.download_button("📥 Exportera Lagersaldo (CSV)", csv_all, "lagersaldo.csv", "text/csv")
     
@@ -214,10 +249,9 @@ elif menu == "📋 Inventering":
                 st.success(f"{match.iloc[0]['Modell']} tillagd!")
     
     st.write(f"Antal inventerade objekt: {len(st.session_state.inv_list)}")
-    st.table(pd.DataFrame(st.session_state.inv_list)[['Modell', 'Resurstagg', 'Status']] if st.session_state.inv_list else pd.DataFrame())
+    if st.session_state.inv_list:
+        st.table(pd.DataFrame(st.session_state.inv_list)[['Modell', 'Resurstagg', 'Status']])
     
     if st.button("Spara inventeringsfil"):
-        # Här kan vi spara till en ny flik eller CSV
         inv_df = pd.DataFrame(st.session_state.inv_list)
         st.download_button("Ladda ner inventeringsfil", inv_df.to_csv(index=False), "inventering_2024.csv")
-
