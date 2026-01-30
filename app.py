@@ -125,30 +125,40 @@ if menu == "🔍 Sök & Låna":
     scanned_qr = st.query_params.get("qr", "")
     
     with st.expander("📷 Starta QR-skanner", expanded=not bool(scanned_qr)):
+        # PIXEL 8 PRO OPTIMERAD JS-KOD
         qr_js = """
         <div style="display: flex; justify-content: center; flex-direction: column; align-items: center;">
-            <div id="reader" style="width: 100%; max-width: 400px; border: 2px solid #ccc; border-radius: 8px; overflow: hidden;"></div>
+            <div id="reader" style="width: 100%; max-width: 400px; border: 2px solid #ccc; border-radius: 8px; overflow: hidden; background: #000;"></div>
         </div>
         <script src="https://unpkg.com/html5-qrcode"></script>
         <script>
             function onScanSuccess(decodedText) {
-                const url = new URL(window.top.location.href);
-                url.searchParams.set('qr', decodedText);
-                window.top.location.href = url.href;
+                // Stoppa kameran direkt vid träff för att undvika dubbel-skanning
+                html5QrCode.stop().then(() => {
+                    const url = new URL(window.top.location.href);
+                    url.searchParams.set('qr', decodedText);
+                    window.top.location.href = url.href;
+                });
             }
+            
             let html5QrCode = new Html5Qrcode("reader");
             const config = { 
-                fps: 25, 
-                qrbox: {width: 280, height: 280},
-                videoConstraints: { 
-                    facingMode: "environment",
-                    focusMode: "continuous",
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 }
-                } 
+                fps: 30, // Högre FPS för Pixel-processorn
+                qrbox: function(viewfinderWidth, viewfinderHeight) {
+                    let minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+                    let fontSize = Math.floor(minEdge * 0.7);
+                    return { width: fontSize, height: fontSize };
+                },
+                aspectRatio: 1.0,
+                formatsToSupport: [ 0, 1, 11 ] // Tvingar sökning efter QR, Code 128 och EAN
             };
-            html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess)
-            .catch(err => console.error("Kamerafel", err));
+
+            // Starta med specifika Pixel-inställningar
+            html5QrCode.start(
+                { facingMode: "environment" }, 
+                config, 
+                onScanSuccess
+            ).catch(err => console.error("Kamerafel", err));
         </script>"""
         st.components.v1.html(qr_js, height=450)
 
