@@ -7,38 +7,26 @@ from io import BytesIO
 from PIL import Image
 import base64
 import time
+import random
 
-# --- 1. CONFIG & RESET ---
-st.set_page_config(page_title="Musik-IT Birka v3", layout="wide", page_icon="🎸")
+# --- 1. KONFIGURATION ---
+st.set_page_config(page_title="Musik-IT Birka v4", layout="wide", page_icon="🎸")
 
-# Tvinga appen att glömma gammal skit om man vill
-if st.sidebar.button("🔄 Nollställ & Ladda om app"):
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
-    st.cache_data.clear()
-    st.rerun()
-
-# --- 2. INITIALISERING ---
+# --- 2. SESSION STATE (Loggar och Minne) ---
 if 'df' not in st.session_state: st.session_state.df = None
 if 'cart' not in st.session_state: st.session_state.cart = []
-if 'edit_idx' not in st.session_state: st.session_state.edit_idx = None
+if 'error_log' not in st.session_state: st.session_state.error_log = []
+if 'last_loan' not in st.session_state: st.session_state.last_loan = None
 
-# --- 3. ADMIN LOGIN (STRIKT) ---
-st.sidebar.title("🎸 Musik-IT Birka")
-pwd = st.sidebar.text_input("Lösenord för Admin", type="password")
-is_admin = (pwd == "Birka")
+def add_log(msg):
+    ts = datetime.now().strftime("%H:%M:%S")
+    st.session_state.error_log.append(f"[{ts}] {msg}")
 
-if is_admin:
-    st.markdown("""<div style='background-color:#d32f2f; color:white; padding:15px; border-radius:10px; text-align:center; font-size:20px; font-weight:bold; margin-bottom:20px;'>
-                🚨 ADMIN-LÄGE AKTIVERAT 🚨<br><small>Du kan nu ändra, radera och registrera produkter</small></div>""", unsafe_allow_html=True)
-else:
-    st.markdown("""<div style='background-color:#388e3c; color:white; padding:15px; border-radius:10px; text-align:center; font-size:20px; font-weight:bold; margin-bottom:20px;'>
-                📱 ANVÄNDAR-LÄGE<br><small>Sök och låna utrustning</small></div>""", unsafe_allow_html=True)
-
-# --- 4. FUNKTIONER ---
-def clean_id(val):
-    if pd.isna(val) or val == "": return ""
-    return str(val).strip().split('.')[0]
+# --- 3. HJÄLPFUNKTIONER ---
+def generate_serial():
+    prefix = datetime.now().strftime("%y%m%d")
+    suffix = random.randint(100, 999)
+    return f"{prefix}-{suffix}"
 
 def img_to_b64(image_file):
     try:
@@ -48,7 +36,9 @@ def img_to_b64(image_file):
         if img.mode in ("RGBA", "P"): img = img.convert("RGB")
         img.save(buf, format="JPEG", quality=80)
         return f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode()}"
-    except: return ""
+    except Exception as e:
+        add_log(f"Bildfel: {e}")
+        return ""
 
 def generate_qr_b64(data):
     qr = qrcode.QRCode(box_size=10, border=2)
@@ -59,196 +49,222 @@ def generate_qr_b64(data):
     img.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode()
 
-# --- 5. DATAHANTERING ---
+# --- 4. DATAHANTERING ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data():
     try:
-        # Cache-buster: lägger till en unik siffra (timestamp) för att tvinga fram ny data
-        cache_buster = str(time.time())
-        data = conn.read(worksheet="Sheet1", ttl=0) 
+        data = conn.read(worksheet="Sheet1", ttl=0)
         cols = ["Enhetsfoto", "Modell", "Tillverkare", "Typ", "Färg", "Resurstagg", "Streckkod", "Status", "Aktuell ägare", "Utlåningsdatum", "Senast inventerad"]
-        for col in cols:
-            if col not in data.columns: data[col] = ""
-        data["Resurstagg"] = data["Resurstagg"].apply(clean_id)
+        for c in cols:
+            if c not in data.columns: data[c] = ""
         st.session_state.df = data.fillna("")
     except Exception as e:
-        st.error(f"Fel vid hämtning: {e}")
+        add_log(f"Sheets-laddning misslyckades: {e}")
 
-if st.session_state.df is None:
-    load_data()
+if st.session_state.df is None: load_data()
 
-def save_to_sheets():
+def save_data():
     try:
         conn.update(worksheet="Sheet1", data=st.session_state.df.astype(str))
-        st.toast("Sparat i molnet!", icon="☁️")
+        st.toast("Synkat med Google Sheets!")
     except Exception as e:
-        st.error(f"Kunde inte spara: {e}")
+        add_log(f"Spara-fel: {e}")
+        st.error("Kunde inte spara till Sheets.")
 
-# --- 6. VARUKORG ---
+# --- 5. ADMIN LOGIN ---
+st.sidebar.title("🎸 Musik-IT Birka")
+pwd = st.sidebar.text_input("Admin lösenord", type="password")
+is_admin = (pwd == "Birka")
+
+# --- 6. VARUKORG & FÖLJESEDEL ---
 if st.session_state.cart:
-    st.sidebar.divider()
-    st.sidebar.subheader("🛒 Varukorg")
-    for i, item in enumerate(st.session_state.cart):
-        st.sidebar.write(f"{i+1}. {item['Modell']}")
-    
-    borrower = st.sidebar.text_input("Vem lånar? (Tvingande) *")
-    
-    if st.sidebar.button("SLUTFÖR LÅN", type="primary", use_container_width=True):
-        if borrower:
-            today = datetime.now().strftime("%Y-%m-%d")
-            for c_item in st.session_state.cart:
-                idx = st.session_state.df[st.session_state.df['Resurstagg'] == c_item['Resurstagg']].index
-                st.session_state.df.loc[idx, ['Status', 'Aktuell ägare', 'Utlåningsdatum']] = ['Utlånad', borrower, today]
-            save_to_sheets()
-            st.session_state.last_loan_info = {"name": borrower, "items": st.session_state.cart.copy()}
-            st.session_state.cart = []
-            st.rerun()
-        else:
-            st.sidebar.error("Ange låntagarens namn!")
-
-    if st.sidebar.button("Töm vagn"):
-        st.session_state.cart = []
-        st.rerun()
+    with st.sidebar.expander("🛒 VARUKORG", expanded=True):
+        for i, item in enumerate(st.session_state.cart):
+            st.write(f"{i+1}. {item['Modell']}")
+        
+        name = st.text_input("Ditt namn *")
+        if st.button("SLUTFÖR LÅN", type="primary"):
+            if name:
+                today = datetime.now().strftime("%Y-%m-%d")
+                for itm in st.session_state.cart:
+                    idx = st.session_state.df[st.session_state.df['Resurstagg'] == itm['Resurstagg']].index
+                    st.session_state.df.loc[idx, ['Status', 'Aktuell ägare', 'Utlåningsdatum']] = ['Utlånad', name, today]
+                
+                st.session_state.last_loan = {"name": name, "date": today, "items": st.session_state.cart.copy()}
+                st.session_state.cart = []
+                save_data()
+                st.rerun()
+            else: st.error("Namn krävs!")
 
 # --- 7. MENY ---
-menu = st.sidebar.selectbox("Gå till", ["🔍 Sök & Låna", "🔄 Återlämning", "➕ Registrera Ny", "⚙️ Lagerlista"])
+menu = st.sidebar.selectbox("Välj funktion", ["🔍 Sök & Låna", "➕ Registrera Ny", "🔄 Återlämning", "⚙️ Admin-Verktyg"])
 
 # --- 8. VY: SÖK & LÅNA ---
 if menu == "🔍 Sök & Låna":
-    # Visa kvitto om lån just gjorts
-    if 'last_loan_info' in st.session_state:
+    # Visa Följesedel (Kvitto)
+    if st.session_state.last_loan:
         with st.container(border=True):
-            st.success(f"✅ Utlånat till {st.session_state.last_loan_info['name']}")
-            st.write("Produkter:")
-            for itm in st.session_state.last_loan_info['items']:
-                st.write(f"- {itm['Modell']} ({itm['Resurstagg']})")
-            if st.button("Stäng kvitto"):
-                del st.session_state.last_loan_info
+            st.success("### ✅ Lån genomfört!")
+            st.write(f"**Låntagare:** {st.session_state.last_loan['name']}")
+            st.write(f"**Datum:** {st.session_state.last_loan['date']}")
+            st.write("**Produkter:**")
+            for i in st.session_state.last_loan['items']: st.write(f"- {i['Modell']} ({i['Resurstagg']})")
+            st.button("🖨️ Skriv ut (Använd webbläsarens utskrift)", on_click=lambda: None)
+            if st.button("Stäng kvitto"): 
+                st.session_state.last_loan = None
                 st.rerun()
 
-    # Kamera
-    with st.expander("📷 Skanna QR", expanded=True):
+    # QR-Skanner (Kompakt storlek)
+    with st.expander("📷 Öppna QR-Skanner", expanded=False):
         st.components.v1.html("""
-            <div id="reader" style="width:100%;"></div>
+            <style>#reader { width: 300px !important; margin: auto; }</style>
+            <div id="reader"></div>
             <script src="https://unpkg.com/html5-qrcode"></script>
             <script>
                 const scanner = new Html5Qrcode("reader");
-                scanner.start({ facingMode: "environment" }, { fps: 15, qrbox: 250 }, 
+                scanner.start({ facingMode: "environment" }, { fps: 10, qrbox: 200 }, 
                 (txt) => { 
-                    localStorage.setItem('birka_qr', txt);
-                    document.getElementById('reader').style.border = "10px solid #4CAF50";
+                    localStorage.setItem('scanned_id', txt);
+                    document.getElementById('reader').style.border = "5px solid #4CAF50";
                 });
             </script>
         """, height=350)
-        if st.button("Hämta kod till sök", use_container_width=True, type="primary"):
-            st.components.v1.html("""<script>window.parent.location.href = window.parent.location.href.split('?')[0] + '?s=' + localStorage.getItem('birka_qr');</script>""", height=0)
+        if st.button("Fyll i skannat ID"):
+            st.components.v1.html("""<script>window.parent.location.href = window.parent.location.href.split('?')[0] + '?q=' + localStorage.getItem('scanned_id');</script>""", height=0)
 
-    search_val = st.query_params.get("s", "")
-    q = st.text_input("Sök i lagret", value=search_val)
+    search_q = st.query_params.get("q", "")
+    query = st.text_input("Sök på Modell eller ID", value=search_q)
 
     if st.session_state.df is not None:
-        results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(q, case=False)).any(axis=1)] if q else st.session_state.df
+        filtered = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)] if query else st.session_state.df
         
-        for idx, row in results.iterrows():
+        for idx, row in filtered.iterrows():
             with st.container(border=True):
                 c1, c2, c3 = st.columns([1, 2, 1])
                 with c1:
-                    if row['Enhetsfoto']: st.image(row['Enhetsfoto'], width=100)
-                    else: st.write("📷")
+                    if row['Enhetsfoto']: st.image(row['Enhetsfoto'], width=150)
+                    else: st.info("Ingen bild")
+                    qr_img = generate_qr_b64(row['Resurstagg'])
+                    st.markdown(f"<img src='data:image/png;base64,{qr_img}' width='100'>", unsafe_allow_html=True)
                 with c2:
                     st.subheader(row['Modell'])
-                    st.write(f"ID: {row['Resurstagg']} | Status: {row['Status']}")
-                    if row['Status'] == 'Utlånad': st.warning(f"Låntagare: {row['Aktuell ägare']}")
+                    st.write(f"**ID:** {row['Resurstagg']} | **Status:** {row['Status']}")
+                    st.write(f"**Typ:** {row['Typ']} | **Färg:** {row['Färg']}")
+                    if row['Status'] == 'Utlånad': st.warning(f"Lånad av: {row['Aktuell ägare']}")
                 with c3:
                     if row['Status'] == 'Tillgänglig':
-                        if st.button("🛒 Låna", key=f"l_{idx}"):
+                        if st.button("🛒 Lägg i vagn", key=f"add_{idx}"):
                             st.session_state.cart.append(row.to_dict())
                             st.rerun()
                     if is_admin:
-                        if st.button("✏️ EDIT", key=f"e_{idx}"):
+                        if st.button("✏️ EDITERA", key=f"edit_{idx}"):
                             st.session_state.edit_idx = idx
                             st.rerun()
 
-# --- 9. VY: EDITERING (FULLSTÄNDIG) ---
-if st.session_state.edit_idx is not None:
-    idx = st.session_state.edit_idx
-    row = st.session_state.df.loc[idx]
-    st.divider()
-    st.header(f"Redigerar: {row['Modell']}")
+    # Edit-läge för Admin
+    if is_admin and 'edit_idx' in st.session_state and st.session_state.edit_idx is not None:
+        idx = st.session_state.edit_idx
+        row = st.session_state.df.loc[idx]
+        with st.form("edit_form"):
+            st.subheader(f"Redigerar {row['Modell']}")
+            col1, col2 = st.columns(2)
+            # Här kan du lägga till alla fält för editering likt "Registrera Ny"
+            new_status = col1.selectbox("Status", ["Tillgänglig", "Utlånad", "Trasig", "Service"], index=0)
+            delete_me = st.checkbox("❌ Radera denna produkt helt")
+            if st.form_submit_button("Spara ändringar"):
+                if delete_me: st.session_state.df = st.session_state.df.drop(idx)
+                else: st.session_state.df.at[idx, 'Status'] = new_status
+                save_data()
+                st.session_state.edit_idx = None
+                st.rerun()
+
+# --- 9. VY: REGISTRERA NY (ALLA FÄLT) ---
+elif menu == "➕ Registrera Ny":
+    st.header("Registrera ny utrustning")
     
-    with st.form("edit_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            new_m = st.text_input("Modell", value=row['Modell'])
-            new_t = st.text_input("Tillverkare", value=row['Tillverkare'])
-            new_ty = st.text_input("Typ", value=row['Typ'])
-            new_f = st.text_input("Färg", value=row['Färg'])
-            new_id = st.text_input("Resurstagg (ID)", value=row['Resurstagg'])
-        with col2:
-            new_s = st.selectbox("Status", ["Tillgänglig", "Utlånad", "Service", "Trasig"], 
-                               index=["Tillgänglig", "Utlånad", "Service", "Trasig"].index(row['Status']) if row['Status'] in ["Tillgänglig", "Utlånad", "Service", "Trasig"] else 0)
-            new_owner = st.text_input("Aktuell ägare", value=row['Aktuell ägare'])
-            new_date = st.text_input("Utlåningsdatum", value=row['Utlåningsdatum'])
-            new_inv = st.text_input("Senast inventerad", value=row['Senast inventerad'])
-            new_img = st.file_uploader("Byt bild")
-        
-        st.write("---")
-        delete_confirm = st.checkbox("❌ RADERA DENNA PRODUKT HELT OCH HÅLLET")
-        
-        sub, can = st.columns(2)
-        if sub.form_submit_button("SPARA ÄNDRINGAR", use_container_width=True):
-            if delete_confirm:
-                st.session_state.df = st.session_state.df.drop(idx).reset_index(drop=True)
-            else:
-                st.session_state.df.loc[idx, ['Modell', 'Tillverkare', 'Typ', 'Färg', 'Resurstagg', 'Status', 'Aktuell ägare', 'Utlåningsdatum', 'Senast inventerad']] = [new_m, new_t, new_ty, new_f, new_id, new_s, new_owner, new_date, new_inv]
-                if new_img: st.session_state.df.at[idx, 'Enhetsfoto'] = img_to_b64(new_img)
+    with st.form("reg_form", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            mod = st.text_input("Modell *")
+            tillv = st.text_input("Tillverkare")
+            typ = st.text_input("Typ (t.ex. Gitarr)")
+            farg = st.text_input("Färg")
+        with c2:
+            tag_col1, tag_col2 = st.columns([2,1])
+            res_tag = tag_col1.text_input("Resurstagg / ID *", key="manual_tag")
+            if tag_col2.form_submit_button("🔄 Generera"):
+                st.info("Klicka igen för att bekräfta ID") # Streamlit form quirk
+                res_tag = generate_serial()
             
-            save_to_sheets()
-            st.session_state.edit_idx = None
-            st.rerun()
-        if can.form_submit_button("AVBRYT", use_container_width=True):
-            st.session_state.edit_idx = None
-            st.rerun()
+            barcode = st.text_input("Streckkod")
+            status = st.selectbox("Status", ["Tillgänglig", "Service", "Reserv"])
+        
+        foto = st.camera_input("Ta enhetsfoto")
+        
+        if st.form_submit_button("✅ SPARA PRODUKT"):
+            if mod and res_tag:
+                new_data = {
+                    "Modell": mod, "Tillverkare": tillv, "Typ": typ, "Färg": farg,
+                    "Resurstagg": res_tag, "Streckkod": barcode, "Status": status,
+                    "Enhetsfoto": img_to_b64(foto) if foto else "",
+                    "Senast inventerad": datetime.now().strftime("%Y-%m-%d")
+                }
+                st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_data])], ignore_index=True)
+                save_data()
+                st.success(f"Sparade {mod} med ID {res_tag}")
+            else: st.error("Modell och ID är obligatoriskt!")
 
 # --- 10. VY: ÅTERLÄMNING ---
 elif menu == "🔄 Återlämning":
-    st.header("Återlämning")
+    st.header("Lämna tillbaka utrustning")
     borrowed = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']
-    if borrowed.empty:
-        st.info("Inga utestående lån hittades.")
-    else:
-        for idx, row in borrowed.iterrows():
-            with st.container(border=True):
-                st.write(f"**{row['Modell']}** - Lånad av: {row['Aktuell ägare']} ({row['Utlåningsdatum']})")
-                if st.button("REGISTRERA ÅTERKOMMEN", key=f"r_{idx}"):
-                    st.session_state.df.at[idx, 'Status'] = 'Tillgänglig'
-                    st.session_state.df.at[idx, 'Aktuell ägare'] = ''
-                    st.session_state.df.at[idx, 'Utlåningsdatum'] = ''
-                    st.session_state.df.at[idx, 'Senast inventerad'] = datetime.now().strftime("%Y-%m-%d")
-                    save_to_sheets()
-                    st.rerun()
+    if borrowed.empty: st.info("Inga utlånade produkter.")
+    for idx, row in borrowed.iterrows():
+        with st.container(border=True):
+            st.write(f"**{row['Modell']}** (Lånad av: {row['Aktuell ägare']})")
+            if st.button("REGISTRERA ÅTERLÄMNAD", key=f"ret_{idx}"):
+                st.session_state.df.loc[idx, ['Status', 'Aktuell ägare', 'Utlåningsdatum']] = ['Tillgänglig', '', '']
+                st.session_state.df.at[idx, 'Senast inventerad'] = datetime.now().strftime("%Y-%m-%d")
+                save_data()
+                st.rerun()
 
-# --- 11. VY: REGISTRERA ---
-elif menu == "➕ Registrera Ny":
-    if not is_admin: st.warning("Logga in som Admin först.")
+# --- 11. VY: ADMIN-VERKTYG ---
+elif menu == "⚙️ Admin-Verktyg":
+    if not is_admin: 
+        st.warning("Vänligen ange lösenord i sidomenyn.")
     else:
-        with st.form("new_item"):
-            m = st.text_input("Modell *")
-            i = st.text_input("ID/Resurstagg *")
-            f = st.camera_input("Ta foto")
-            if st.form_submit_button("Spara i lager"):
-                new_row = {"Modell": m, "Resurstagg": clean_id(i), "Status": "Tillgänglig", "Enhetsfoto": img_to_b64(f) if f else ""}
-                st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_row])], ignore_index=True)
-                save_to_sheets()
-                st.success("Produkten sparad!")
+        tab1, tab2, tab3 = st.tabs(["📊 Lagerhantering", "🖨️ Bulk QR-utskrift", "📝 Fel-logg"])
+        
+        with tab1:
+            st.dataframe(st.session_state.df)
+            if st.button("Tvinga omladdning från Sheets"):
+                st.session_state.df = None
+                st.rerun()
+        
+        with tab2:
+            st.subheader("Välj produkter för QR-utskrift")
+            to_print = st.multiselect("Välj prylar", st.session_state.df['Modell'].tolist())
+            if to_print:
+                html_grid = "<div style='display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px;'>"
+                for m_name in to_print:
+                    item = st.session_state.df[st.session_state.df['Modell'] == m_name].iloc[0]
+                    qr_b64 = generate_qr_b64(item['Resurstagg'])
+                    html_grid += f"""
+                        <div style='border: 1px solid #ccc; padding: 10px; text-align: center;'>
+                            <img src='data:image/png;base64,{qr_b64}' width='100'><br>
+                            <b style='font-size: 10px;'>{item['Modell']}</b><br>
+                            <small style='font-size: 8px;'>ID: {item['Resurstagg']}</small>
+                        </div>
+                    """
+                html_grid += "</div>"
+                st.components.v1.html(html_grid, height=600, scrolling=True)
+                st.button("Skriv ut sidan (Ctrl + P)")
 
-# --- 12. VY: LAGERLISTA (ADMIN) ---
-elif menu == "⚙️ Lagerlista":
-    if not is_admin: st.warning("Logga in.")
-    else:
-        st.subheader("Hela lagret")
-        st.dataframe(st.session_state.df)
-        if st.button("Synka om med Google Sheets nu"):
-            load_data()
-            st.rerun()
+        with tab3:
+            st.subheader("Systemhändelser")
+            for log in reversed(st.session_state.error_log):
+                st.code(log)
+            if st.button("Rensa logg"): 
+                st.session_state.error_log = []
+                st.rerun()
