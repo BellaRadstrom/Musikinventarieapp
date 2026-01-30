@@ -122,48 +122,56 @@ if st.session_state.last_checkout:
 # --- VY: SÖK & LÅNA ---
 if menu == "🔍 Sök & Låna":
     st.header("Sök & Låna")
+    
+    # Hämta skannad kod från URL
     scanned_qr = st.query_params.get("qr", "")
     
     with st.expander("📷 Starta QR-skanner", expanded=not bool(scanned_qr)):
-        # PIXEL 8 PRO OPTIMERAD JS-KOD
         qr_js = """
         <div style="display: flex; justify-content: center; flex-direction: column; align-items: center;">
             <div id="reader" style="width: 100%; max-width: 400px; border: 2px solid #ccc; border-radius: 8px; overflow: hidden; background: #000;"></div>
+            <p id="scan-feedback" style="color: #666; font-family: sans-serif; margin-top: 10px;">Väntar på skanning...</p>
         </div>
         <script src="https://unpkg.com/html5-qrcode"></script>
         <script>
+            let html5QrCode = new Html5Qrcode("reader");
+            
             function onScanSuccess(decodedText) {
-                // Stoppa kameran direkt vid träff för att undvika dubbel-skanning
+                document.getElementById("scan-feedback").innerText = "KOD HITTAD: " + decodedText + ". Laddar...";
+                document.getElementById("scan-feedback").style.color = "green";
+                
+                // Stoppa kameran
                 html5QrCode.stop().then(() => {
                     const url = new URL(window.top.location.href);
                     url.searchParams.set('qr', decodedText);
-                    window.top.location.href = url.href;
+                    // Använd replace för att tvinga fram en ren omladdning med nya parametrar
+                    window.top.location.replace(url.href);
+                }).catch(err => {
+                    // Fallback om stop misslyckas
+                    const url = new URL(window.top.location.href);
+                    url.searchParams.set('qr', decodedText);
+                    window.top.location.replace(url.href);
                 });
             }
             
-            let html5QrCode = new Html5Qrcode("reader");
             const config = { 
-                fps: 30, // Högre FPS för Pixel-processorn
-                qrbox: function(viewfinderWidth, viewfinderHeight) {
-                    let minEdge = Math.min(viewfinderWidth, viewfinderHeight);
-                    let fontSize = Math.floor(minEdge * 0.7);
-                    return { width: fontSize, height: fontSize };
-                },
-                aspectRatio: 1.0,
-                formatsToSupport: [ 0, 1, 11 ] // Tvingar sökning efter QR, Code 128 och EAN
+                fps: 20, 
+                qrbox: {width: 250, height: 250},
+                aspectRatio: 1.0
             };
 
-            // Starta med specifika Pixel-inställningar
-            html5QrCode.start(
-                { facingMode: "environment" }, 
-                config, 
-                onScanSuccess
-            ).catch(err => console.error("Kamerafel", err));
+            html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess)
+            .catch(err => {
+                document.getElementById("scan-feedback").innerText = "Kamerafel: Kontrollera behörighet.";
+                document.getElementById("scan-feedback").style.color = "red";
+            });
         </script>"""
         st.components.v1.html(qr_js, height=450)
 
+    # Visa sökfältet med värdet från URL (om det finns)
     query = st.text_input("Sök produkt eller ID", value=scanned_qr)
-    if scanned_qr and st.button("Rensa sökning"):
+    
+    if scanned_qr and st.button("Rensa skanning/sökning"):
         st.query_params.clear()
         st.rerun()
 
