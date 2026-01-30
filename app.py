@@ -7,7 +7,7 @@ import qrcode
 from io import BytesIO
 from PIL import Image
 import base64
-from streamlit_qr_scanner import streamlit_qr_scanner
+from pyzbar.pyzbar import decode
 
 # --- CONFIG ---
 st.set_page_config(page_title="Musik-Inventering Pro", layout="wide", page_icon="🎸")
@@ -136,21 +136,19 @@ if st.session_state.last_checkout:
 if menu == "🔍 Sök & Låna":
     st.header("Sök & Låna")
     
-    col_search, col_qr = st.columns([3, 1])
-    
-    with col_qr:
-        if st.button("📷 Skanna QR"):
-            # Startar kameran för QR-skanning
-            qr_code = streamlit_qr_scanner(key='qr_scanner')
-            if qr_code:
-                st.session_state.qr_search_value = qr_code
-                st.rerun()
+    with st.expander("📷 Skanna QR-kod med kameran"):
+        img_file = st.camera_input("Rikta kameran mot etiketten")
+        if img_file:
+            decoded_objs = decode(Image.open(img_file))
+            if decoded_objs:
+                st.session_state.qr_search_value = decoded_objs[0].data.decode("utf-8")
+                st.success(f"Hittade ID: {st.session_state.qr_search_value}")
+            else:
+                st.warning("Ingen QR-kod hittades i bilden. Försök igen.")
 
-    with col_search:
-        # Om vi har skannat något hamnar det här, annars kan man skriva manuellt
-        query = st.text_input("Sök produkt eller ID", value=st.session_state.qr_search_value, placeholder="Skriv eller skanna...")
-        if query != st.session_state.qr_search_value:
-            st.session_state.qr_search_value = query
+    query = st.text_input("Sök produkt eller ID", value=st.session_state.qr_search_value, placeholder="Skriv eller använd skannern ovan...")
+    if query != st.session_state.qr_search_value:
+        st.session_state.qr_search_value = query
 
     results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(st.session_state.qr_search_value, case=False)).any(axis=1)] if st.session_state.qr_search_value else st.session_state.df
 
@@ -215,13 +213,12 @@ if menu == "🔍 Sök & Låna":
                     st.session_state.editing_item = idx
                     st.rerun()
 
-# --- VY: REGISTRERA NYTT ---
+# --- ÖVRIGA MENYVAL (SAMMA SOM TIDIGARE) ---
 elif menu == "➕ Registrera Nytt":
     st.header("Ny produkt")
     if st.button("✨ Generera unikt Serienummer"):
         st.session_state.temp_sn = f"SN-{random.randint(10000, 99999)}"
         st.rerun()
-
     with st.form("new_reg", clear_on_submit=True):
         c1, c2 = st.columns(2)
         with c1:
@@ -243,7 +240,6 @@ elif menu == "➕ Registrera Nytt":
                     st.success(f"Sparad: {m_in}")
             else: st.error("Modell och Serienummer krävs!")
 
-# --- VY: ÅTERLÄMNING ---
 elif menu == "🔄 Återlämning":
     st.header("Återlämning")
     active_b = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']['Aktuell ägare'].unique()
@@ -263,7 +259,6 @@ elif menu == "🔄 Återlämning":
                 st.rerun()
     else: st.info("Inga utlånade objekt.")
 
-# --- VY: ADMIN ---
 elif menu == "⚙️ Admin & Inventering":
     st.header("Administration")
     t1, t2, t3 = st.tabs(["📊 Lagerlista", "🏷️ Bulk-etiketter", "🛠️ Logg"])
