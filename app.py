@@ -138,7 +138,6 @@ if st.session_state.last_checkout:
 if menu == "🔍 Sök & Låna":
     st.header("Sök & Låna")
     
-    # EDITERINGS-MODAL (HÖGST UPP OM AKTIV)
     if st.session_state.editing_item is not None:
         idx = st.session_state.editing_item
         item = st.session_state.df.iloc[idx]
@@ -151,7 +150,7 @@ if menu == "🔍 Sök & Låna":
                     e_stat = st.selectbox("Status", ["Tillgänglig", "Utlånad", "Service"], 
                                          index=["Tillgänglig", "Utlånad", "Service"].index(item['Status']) if item['Status'] in ["Tillgänglig", "Utlånad", "Service"] else 0)
                     st.write("📸 **Uppdatera bild**")
-                    new_foto = st.camera_input("Ta nytt foto för att ersätta nuvarande")
+                    new_foto = st.camera_input("Ta nytt foto")
                     
                     if st.form_submit_button("Spara alla ändringar"):
                         st.session_state.df.at[idx, 'Modell'] = e_mod
@@ -165,10 +164,9 @@ if menu == "🔍 Sök & Låna":
                     st.session_state.editing_item = None
                     st.rerun()
             with col_p:
-                st.write("🖨️ **Förhandsgranskning QR**")
                 st.components.v1.html(get_label_html([item.to_dict()]), height=250)
 
-    query = st.text_input("Sök i lagret (Modell, Märke, ID)...")
+    query = st.text_input("Sök i lagret...")
     results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)]
 
     for idx, row in results.iterrows():
@@ -176,7 +174,6 @@ if menu == "🔍 Sök & Låna":
             c1, c2, c3, c4 = st.columns([1, 2, 1, 1])
             with c1:
                 if str(row['Enhetsfoto']).startswith("data:image"): st.image(row['Enhetsfoto'], width=80)
-                else: st.write("📷 Ingen bild")
             with c2:
                 st.write(f"**{row['Modell']}**")
                 st.caption(f"ID: {row['Resurstagg']} | SN: {row['Serienummer']}")
@@ -210,20 +207,43 @@ elif menu == "➕ Registrera Nytt":
                 save_data(st.session_state.df)
                 st.success(f"Klar! ID: {rid}")
 
-# --- VY: ÅTERLÄMNING ---
+# --- VY: ÅTERLÄMNING (UPPDATERAD TILL BATCH-LÄGE) ---
 elif menu == "🔄 Återlämning":
-    st.header("Återlämning")
-    loaned = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']
-    if not loaned.empty:
-        options = loaned.apply(lambda r: f"{r['Modell']} [ID: {r['Resurstagg']}]", axis=1).tolist()
-        sel = st.multiselect("Välj instrument:", options)
-        if st.button("Checka in"):
-            for s in sel:
-                tid = s.split("[ID: ")[1].split("]")[0]
-                st.session_state.df.loc[st.session_state.df['Resurstagg'] == tid, ['Status', 'Aktuell ägare', 'Utlåningsdatum']] = ['Tillgänglig', '', '']
-            save_data(st.session_state.df)
-            st.rerun()
-    else: st.info("Inga utlånade objekt.")
+    st.header("Återlämning per person")
+    
+    # Hitta alla unika låntagare
+    active_borrowers = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']['Aktuell ägare'].unique()
+    
+    if len(active_borrowers) > 0:
+        selected_borrower = st.selectbox("Välj person som lämnar tillbaka:", ["--- Välj person ---"] + list(active_borrowers))
+        
+        if selected_borrower != "--- Välj person ---":
+            # Hämta alla objekt för denna person
+            borrowed_items = st.session_state.df[st.session_state.df['Aktuell ägare'] == selected_borrower]
+            
+            st.subheader(f"Produkter utlånade till {selected_borrower}")
+            st.write("Avmarkera de objekt som INTE lämnas in:")
+            
+            # Skapa en checklista
+            return_list = []
+            for i, row in borrowed_items.iterrows():
+                is_checked = st.checkbox(f"{row['Modell']} (ID: {row['Resurstagg']})", value=True, key=f"ret_{row['Resurstagg']}")
+                if is_checked:
+                    return_list.append(row['Resurstagg'])
+            
+            if st.button(f"Bekräfta inlämning av {len(return_list)} objekt", type="primary"):
+                if len(return_list) > 0:
+                    for tid in return_list:
+                        st.session_state.df.loc[st.session_state.df['Resurstagg'] == tid, 
+                                                ['Status', 'Aktuell ägare', 'Utlåningsdatum']] = ['Tillgänglig', '', '']
+                    
+                    if save_data(st.session_state.df):
+                        st.success(f"Inlämning klar för {selected_borrower}!")
+                        st.rerun()
+                else:
+                    st.warning("Inga objekt valda för inlämning.")
+    else:
+        st.info("Inga utlånade objekt i systemet just nu.")
 
 # --- VY: ADMIN ---
 elif menu == "⚙️ Admin & Inventering":
