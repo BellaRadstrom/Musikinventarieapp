@@ -9,7 +9,7 @@ import base64
 import random
 
 # --- 1. SETUP & SESSION STATE ---
-st.set_page_config(page_title="Musik-IT Birka v10", layout="wide")
+st.set_page_config(page_title="Musik-IT Birka v11", layout="wide")
 
 for key in ['cart', 'edit_idx', 'debug_log', 'last_loan']:
     if key not in st.session_state:
@@ -96,8 +96,9 @@ menu = st.sidebar.selectbox("Meny", ["🔍 Sök & Skanna", "➕ Ny registrering"
 if menu == "🔍 Sök & Skanna":
     if st.session_state.last_loan:
         l = st.session_state.last_loan
-        rows = "".join([f"<li>{i['Modell']}</li>" for i in l['items']])
-        st.components.v1.html(f"<div style='border:2px solid #333;padding:15px;background:white;'><h3>Kvitto: {l['name']}</h3><ul>{rows}</ul><button onclick='window.print()'>🖨️ SKRIV UT</button></div>", height=250)
+        # Uppdaterat kvitto med Tillverkare och ID
+        rows = "".join([f"<li><b>{i['Modell']}</b><br><small>Märke: {i['Tillverkare']} | ID: {i['Resurstagg']}</small></li>" for i in l['items']])
+        st.components.v1.html(f"<div style='border:2px solid #333;padding:15px;background:white;font-family:sans-serif;'><h3>Lånekvitto: {l['name']}</h3><p>Datum: {l['date']}</p><hr><ul>{rows}</ul><button onclick='window.print()'>🖨️ SKRIV UT</button></div>", height=300)
         if st.button("Stäng kvitto"): st.session_state.last_loan = None; st.rerun()
 
     if is_admin and st.session_state.edit_idx is not None:
@@ -105,7 +106,7 @@ if menu == "🔍 Sök & Skanna":
         row = st.session_state.df.loc[idx]
         with st.container(border=True):
             st.subheader(f"🛠️ Editera: {row['Modell']}")
-            with st.form("edit_v10"):
+            with st.form("edit_v11"):
                 c1, c2 = st.columns(2)
                 e_mod = c1.text_input("Modell", row['Modell'])
                 e_brand = c1.text_input("Tillverkare", row['Tillverkare'])
@@ -149,7 +150,7 @@ if menu == "🔍 Sök & Skanna":
 
 # --- 8. NY REGISTRERING ---
 elif menu == "➕ Ny registrering":
-    with st.form("new_v10", clear_on_submit=True):
+    with st.form("new_v11", clear_on_submit=True):
         st.subheader("Lägg till ny utrustning")
         c1, c2 = st.columns(2)
         f_mod = c1.text_input("Modell *")
@@ -172,10 +173,13 @@ elif menu == "➕ Ny registrering":
                 df = pd.concat([df, pd.DataFrame([new])], ignore_index=True)
                 save_to_sheets(df); st.rerun()
 
-# --- 9. ÅTERLÄMNING ---
+# --- 9. ÅTERLÄMNING (FIXAD) ---
 elif menu == "🔄 Återlämning":
     st.header("Individuell återlämning")
-    borrowed = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']
+    # Tvinga omladdning av data för att se senaste status
+    current_df = get_data()
+    borrowed = current_df[current_df['Status'] == 'Utlånad']
+    
     if not borrowed.empty:
         owner = st.selectbox("Vem lämnar tillbaka?", ["---"] + list(borrowed['Aktuell ägare'].unique()))
         if owner != "---":
@@ -184,11 +188,19 @@ elif menu == "🔄 Återlämning":
                 with st.container(border=True):
                     c1, c2 = st.columns([3, 1])
                     c1.write(f"**{row['Modell']}** (ID: {row['Resurstagg']})")
-                    if c2.button("✅ Bekräfta", key=f"ret_{idx}"):
-                        df = get_data()
-                        p_idx = df[df['Resurstagg'] == row['Resurstagg']].index
-                        df.loc[p_idx, ['Status', 'Aktuell ägare', 'Utlåningsdatum', 'Senast inventerad']] = ['Tillgänglig', '', '', datetime.now().strftime("%Y-%m-%d")]
-                        save_to_sheets(df); st.rerun()
+                    c1.caption(f"Utlånad: {row['Utlåningsdatum']}")
+                    
+                    # Fix: Återlämningsknappen hämtar färsk data och sparar direkt
+                    if c2.button("✅ Bekräfta återkomst", key=f"ret_{row['Resurstagg']}"):
+                        df_to_update = get_data()
+                        # Hitta raden baserat på unikt ID istället för index
+                        p_idx = df_to_update[df_to_update['Resurstagg'] == row['Resurstagg']].index
+                        if not p_idx.empty:
+                            df_to_update.loc[p_idx, ['Status', 'Aktuell ägare', 'Utlåningsdatum', 'Senast inventerad']] = ['Tillgänglig', '', '', datetime.now().strftime("%Y-%m-%d")]
+                            if save_to_sheets(df_to_update):
+                                st.session_state.df = df_to_update
+                                st.success(f"{row['Modell']} är nu åter i lagret!")
+                                st.rerun()
     else: st.info("Inga utlånade produkter.")
 
 # --- 10. ADMIN & INVENTERING ---
