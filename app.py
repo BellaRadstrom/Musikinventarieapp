@@ -26,6 +26,7 @@ def add_log(msg):
 # --- HJÄLPFUNKTIONER ---
 def clean_id(val):
     if pd.isna(val) or val == "": return ""
+    # Tar bort .0 som ofta kommer från Excel/Google Sheets nummerformat
     s = str(val).strip()
     if s.endswith(".0"): s = s[:-2]
     return s
@@ -37,7 +38,7 @@ def process_image_to_base64(image_file):
         buffered = BytesIO()
         if img.mode in ("RGBA", "P"): img = img.convert("RGB")
         img.save(buffered, format="JPEG", quality=70)
-        return f"data:image/jpeg;base64,{base64.b64encode(buffered.getvalue()).decode()}"
+        return f"data:image/jpeg;base64,{base64.get_encode(buffered.getvalue()).decode()}"
     except Exception as e:
         add_log(f"Bildfel: {e}")
         return ""
@@ -86,8 +87,11 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 def load_data():
     try:
         data = conn.read(worksheet="Sheet1", ttl=0)
+        # Rensning av ID-kolumner direkt vid laddning
         if "Resurstagg" in data.columns:
             data["Resurstagg"] = data["Resurstagg"].apply(clean_id)
+        if "Serienummer" in data.columns:
+            data["Serienummer"] = data["Serienummer"].apply(clean_id)
         return data.fillna("")
     except Exception as e:
         add_log(f"Laddningsfel: {e}")
@@ -135,43 +139,53 @@ if st.session_state.last_checkout:
 if menu == "🔍 Sök & Låna":
     st.header("Sök & Låna")
     
-    # Hämta skannat värde från URL
     q_params = st.query_params
     scanned_val = q_params.get("qr", "")
     
-    with st.expander("📷 Öppna QR-skanner", expanded=False):
-        # JavaScript som tvingar omladdning av topp-fönstret för att Streamlit ska plocka upp parametern
+    with st.expander("📷 Öppna QR-skanner", expanded=bool(not scanned_val)):
+        # Förbättrad HTML/JS för skannern: mindre vy och bättre autofokus
         qr_html = f"""
-        <div id="qr-reader" style="width:100%"></div>
+        <div style="display: flex; justify-content: center;">
+            <div id="qr-reader" style="width: 100%; max-width: 350px; border: 2px solid #333; border-radius: 10px; overflow: hidden;"></div>
+        </div>
         <script src="https://unpkg.com/html5-qrcode"></script>
         <script>
             function onScanSuccess(decodedText, decodedResult) {{
+                // Ljud eller visuell feedback kan läggas till här
                 let url = new URL(window.top.location.href);
                 url.searchParams.set('qr', decodedText);
                 window.top.location.href = url.href;
             }}
+            
+            let config = {{ 
+                fps: 20, 
+                qrbox: {{width: 200, height: 200}},
+                aspectRatio: 1.0
+            }};
+            
             let html5QrcodeScanner = new Html5QrcodeScanner(
-                "qr-reader", {{ fps: 15, qrbox: 250 }}
+                "qr-reader", config, /* verbose= */ false
             );
             html5QrcodeScanner.render(onScanSuccess);
         </script>
         """
-        st.components.v1.html(qr_html, height=500)
+        st.components.v1.html(qr_html, height=420)
 
-    # Om vi har ett skannat värde, använd det som default i sökfältet
-    query = st.text_input("Sök produkt eller ID", value=scanned_val, placeholder="Skriv här eller skanna ovan...")
+    # Inputfältet (fylls i av skannern)
+    query = st.text_input("Sök produkt, märke eller ID...", value=scanned_val)
     
-    # Rensa skanning (knapp för att tömma URL-parametern om man vill söka på nytt)
-    if scanned_val and st.button("Rensa skanning"):
-        st.query_params.clear()
-        st.rerun()
+    if scanned_val:
+        if st.button("Rensa skanning ✖️"):
+            st.query_params.clear()
+            st.rerun()
 
     if query:
+        # Säkerställ att vi matchar mot rensade ID:n
         results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)]
     else:
         results = st.session_state.df
 
-    # Redigeringsläge (Helt intakt)
+    # Redigeringsläge
     if st.session_state.editing_item is not None:
         idx = st.session_state.editing_item
         item = st.session_state.df.iloc[idx]
@@ -198,8 +212,8 @@ if menu == "🔍 Sök & Låna":
                     st.session_state.df.at[idx, 'Modell'] = u_mod
                     st.session_state.df.at[idx, 'Tillverkare'] = u_tverk
                     st.session_state.df.at[idx, 'Typ'] = u_typ
-                    st.session_state.df.at[idx, 'Resurstagg'] = u_sn
-                    st.session_state.df.at[idx, 'Serienummer'] = u_sn
+                    st.session_state.df.at[idx, 'Resurstagg'] = clean_id(u_sn)
+                    st.session_state.df.at[idx, 'Serienummer'] = clean_id(u_sn)
                     st.session_state.df.at[idx, 'Färg'] = u_farg
                     st.session_state.df.at[idx, 'Streckkod'] = u_skod
                     st.session_state.df.at[idx, 'Status'] = u_stat
@@ -221,7 +235,7 @@ if menu == "🔍 Sök & Låna":
             with c2:
                 color = "green" if row['Status'] == 'Tillgänglig' else "red"
                 st.markdown(f"### {row['Modell']}")
-                st.markdown(f":{color}[● {row['Status']}] | {row['Typ']} | SN: {row['Serienummer']}")
+                st.markdown(f":{color}[● {row['Status']}] | {row['Typ']} | ID: {row['Resurstagg']}")
             with c3:
                 st.image(generate_qr(row['Resurstagg']), width=60)
             with c4:
@@ -236,7 +250,7 @@ if menu == "🔍 Sök & Låna":
                     st.session_state.editing_item = idx
                     st.rerun()
 
-# --- VY: REGISTRERA NYTT ---
+# --- ÖVRIGA VYER (Oförändrade) ---
 elif menu == "➕ Registrera Nytt":
     st.header("Ny produkt")
     if st.button("✨ Generera unikt Serienummer"):
@@ -272,7 +286,6 @@ elif menu == "➕ Registrera Nytt":
             else:
                 st.error("Modell och Serienummer krävs!")
 
-# --- VY: ÅTERLÄMNING ---
 elif menu == "🔄 Återlämning":
     st.header("Återlämning")
     active_b = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']['Aktuell ägare'].unique()
@@ -292,7 +305,6 @@ elif menu == "🔄 Återlämning":
                 st.rerun()
     else: st.info("Inga utlånade objekt.")
 
-# --- VY: ADMIN ---
 elif menu == "⚙️ Admin & Inventering":
     st.header("Administration")
     t1, t2, t3 = st.tabs(["📊 Lagerlista", "🏷️ Bulk-etiketter", "🛠️ Logg"])
