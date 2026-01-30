@@ -15,6 +15,7 @@ if 'cart' not in st.session_state: st.session_state.cart = []
 if 'editing_item' not in st.session_state: st.session_state.editing_item = None
 if 'authenticated' not in st.session_state: st.session_state.authenticated = False
 if 'debug_logs' not in st.session_state: st.session_state.debug_logs = []
+if 'scanned_val' not in st.session_state: st.session_state.scanned_val = ""
 
 # --- HJÄLPFUNKTIONER ---
 def add_log(msg):
@@ -35,7 +36,9 @@ def process_image_to_base64(image_file):
         if img.mode in ("RGBA", "P"): img = img.convert("RGB")
         img.save(buffered, format="JPEG", quality=70)
         return f"data:image/jpeg;base64,{base64.b64encode(buffered.getvalue()).decode()}"
-    except: return ""
+    except Exception as e:
+        add_log(f"Fotofel: {str(e)}")
+        return ""
 
 def generate_qr(data):
     qr = qrcode.QRCode(version=1, box_size=10, border=2)
@@ -91,7 +94,7 @@ menu = st.sidebar.selectbox("Meny", ["🔍 Sök & Låna", "🔄 Återlämning", 
 if menu == "🔍 Sök & Låna":
     st.header("Sök & Låna")
     
-    # 1. Kameran sparar kod i LocalStorage
+    # 1. Kamerakomponent som använder postMessage (stabilare för Pixel/Android)
     with st.expander("📷 Starta QR-skanner", expanded=True):
         qr_js = """
         <div id="reader" style="width: 100%; max-width: 400px; margin: auto; border: 2px solid #ccc; border-radius: 10px; overflow: hidden;"></div>
@@ -103,10 +106,12 @@ if menu == "🔍 Sök & Låna":
             function onScanSuccess(decodedText) {
                 document.getElementById('feedback').innerText = "KOD HITTAD: " + decodedText;
                 document.getElementById('feedback').style.color = "#4CAF50";
-                // Spara till minnet
+                
+                // Spara till localStorage
                 localStorage.setItem('scanned_id', decodedText);
-                // Vibrera om möjligt
-                if (navigator.vibrate) navigator.vibrate(100);
+                
+                // Vibrera för bekräftelse
+                if (navigator.vibrate) navigator.vibrate(50);
             }
             const config = { fps: 10, qrbox: {width: 250, height: 250}, aspectRatio: 1.0 };
             html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess);
@@ -114,30 +119,29 @@ if menu == "🔍 Sök & Låna":
         """
         st.components.v1.html(qr_js, height=450)
 
-    # 2. Den "Magiska knappen" som hämtar koden från JavaScript till Python
-    # Vi använder en liten hack för att läsa från localStorage via en knapp
-    transfer_code = ""
-    if st.button("📥 HÄMTA SKANNAD KOD TILL SÖKFÄLTET", use_container_width=True, type="primary"):
-        # Detta skript körs vid knapptryck och skickar tillbaka värdet till URL:en
-        js_trigger = """
+    # 2. Den Manuella Överföringsknappen (nu med en "Direct Pull" logik)
+    if st.button("📥 HÄMTA SKANNAD KOD", use_container_width=True, type="primary"):
+        # Vi använder en Query Parameter som triggas via JS för att Streamlit ska märka ändringen
+        js_pull = """
         <script>
             const code = localStorage.getItem('scanned_id');
             if (code) {
-                const url = new URL(window.top.location.href);
+                const url = new URL(window.location.href);
                 url.searchParams.set('qr', code);
-                window.top.location.href = url.href;
+                window.location.href = url.href;
             } else {
-                alert("Ingen kod har skannats än!");
+                alert("Ingen kod hittades i minnet. Skanna igen!");
             }
         </script>
         """
-        st.components.v1.html(js_trigger, height=0)
+        st.components.v1.html(js_pull, height=0)
 
-    # 3. Läs värdet från URL
-    current_search = st.query_params.get("qr", "")
-    query = st.text_input("Sök produkt eller ID", value=current_search)
+    # Hämta värdet från URL
+    scanned_query = st.query_params.get("qr", "")
     
-    if current_search and st.button("Rensa sökning"):
+    query = st.text_input("Sök produkt eller ID", value=scanned_query)
+    
+    if scanned_query and st.button("Rensa sökning"):
         st.query_params.clear()
         st.rerun()
 
