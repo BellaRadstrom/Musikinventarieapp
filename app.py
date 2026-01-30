@@ -1,7 +1,6 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
-import random
 from datetime import datetime
 import qrcode
 from io import BytesIO
@@ -16,6 +15,7 @@ if 'cart' not in st.session_state: st.session_state.cart = []
 if 'editing_item' not in st.session_state: st.session_state.editing_item = None
 if 'last_checkout' not in st.session_state: st.session_state.last_checkout = None
 if 'authenticated' not in st.session_state: st.session_state.authenticated = False
+if 'debug_logs' not in st.session_state: st.session_state.debug_logs = []
 
 # --- HJÄLPFUNKTIONER ---
 def clean_id(val):
@@ -96,113 +96,70 @@ if st.session_state.cart:
         st.session_state.cart = []
         st.rerun()
 
-if st.session_state.last_checkout:
-    st.sidebar.success(f"Lån klart till {st.session_state.last_checkout['borrower']}")
-    list_items_html = "".join([f"<li>{i['Modell']} ({i['Resurstagg']})</li>" for i in st.session_state.last_checkout['items']])
-    print_js = f"""
-    <script>
-    function printList() {{
-        var win = window.open('', '_blank', 'height=700,width=700');
-        win.document.write('<html><head><title>Packlista</title></head><body style="font-family:sans-serif; padding:50px;">');
-        win.document.write('<h1>Packlista - Birka Musik-IT</h1>');
-        win.document.write('<p><b>Låntagare:</b> {st.session_state.last_checkout['borrower']}</p>');
-        win.document.write('<p><b>Datum:</b> {datetime.now().strftime("%Y-%m-%d")}</p><hr><ul>');
-        win.document.write('{list_items_html}');
-        win.document.write('</ul><hr><p>Tack!</p>');
-        win.document.write('</body></html>');
-        win.document.close();
-        setTimeout(function() {{ win.print(); }}, 500);
-    }}
-    </script>
-    <button onclick="printList()" style="width:100%; padding:10px; background:#4CAF50; color:white; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">🖨️ SKRIV UT PACKLISTA</button>
-    """
-    with st.sidebar:
-        st.components.v1.html(print_js, height=60)
-
 # --- VY: SÖK & LÅNA ---
 if menu == "🔍 Sök & Låna":
     st.header("Sök & Låna")
     
-    # Hantera QR-kod via query params
+    # Hämta värde från URL eller LocalStorage via JS
     scanned_qr = st.query_params.get("qr", "")
     
     with st.expander("📷 Starta QR-skanner", expanded=not bool(scanned_qr)):
         qr_js = """
         <div style="display: flex; justify-content: center; flex-direction: column; align-items: center;">
             <div id="reader" style="width: 100%; max-width: 400px; border: 2px solid #ccc; border-radius: 8px; overflow: hidden; background: #000;"></div>
-            <p id="scan-feedback" style="color: #666; font-family: sans-serif; margin-top: 10px; font-weight: bold;">Siktar...</p>
+            <p id="scan-feedback" style="color: #666; font-family: sans-serif; margin-top: 10px; font-weight: bold;">Kameran är aktiv...</p>
         </div>
         <script src="https://unpkg.com/html5-qrcode"></script>
         <script>
-            let html5QrCode = new Html5Qrcode("reader");
-            
-            function onScanSuccess(decodedText) {
-                // Sluta skanna omedelbart
-                html5QrCode.stop().then(() => {
-                    document.getElementById("scan-feedback").innerText = "HITTAD: " + decodedText;
-                    
-                    // Skapa en URL med sökparametern
-                    const url = new URL(window.top.location.href);
-                    url.searchParams.set('qr', decodedText);
-                    
-                    // Navigera med en ren URL-ändring som Streamlit kan fånga upp
-                    window.top.location.search = "qr=" + encodeURIComponent(decodedText);
-                }).catch(err => {
-                     window.top.location.search = "qr=" + encodeURIComponent(decodedText);
-                });
+            if(!window.html5QrCode) {
+                window.html5QrCode = new Html5Qrcode("reader");
             }
             
-            const config = { 
-                fps: 15, 
-                qrbox: {width: 250, height: 250},
-                aspectRatio: 1.0
-            };
-
-            html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess)
-            .catch(err => {
-                document.getElementById("scan-feedback").innerText = "Kamerafel.";
-            });
-        </script>"""
+            function onScanSuccess(decodedText) {
+                document.getElementById("scan-feedback").innerText = "KOD DETEKTERAD: " + decodedText;
+                document.getElementById("scan-feedback").style.color = "#4CAF50";
+                
+                // 1. Spara i LocalStorage (fallback)
+                localStorage.setItem('last_qr', decodedText);
+                
+                // 2. Försök navigera URL (huvudmetod)
+                const url = new URL(window.top.location.href);
+                url.searchParams.set('qr', decodedText);
+                window.top.location.href = url.href;
+                
+                window.html5QrCode.stop();
+            }
+            
+            const config = { fps: 10, qrbox: {width: 250, height: 250}, aspectRatio: 1.0 };
+            window.html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess)
+            .catch(err => { document.getElementById("scan-feedback").innerText = "Kamerafel: " + err; });
+        </script>
+        """
         st.components.v1.html(qr_js, height=450)
 
-    # Sökfältet - vi använder en unik key och fyller i scanned_qr om det finns
-    query = st.text_input("Sök produkt eller ID", value=scanned_qr, key="main_search")
+    # En osynlig komponent som kollar LocalStorage och uppdaterar Streamlit om URL-metoden misslyckas
+    storage_check_js = """
+    <script>
+        const lastQr = localStorage.getItem('last_qr');
+        if (lastQr) {
+            localStorage.removeItem('last_qr');
+            const url = new URL(window.top.location.href);
+            if (url.searchParams.get('qr') !== lastQr) {
+                url.searchParams.set('qr', lastQr);
+                window.top.location.href = url.href;
+            }
+        }
+    </script>
+    """
+    st.components.v1.html(storage_check_js, height=0)
+
+    query = st.text_input("Sök produkt eller ID", value=scanned_qr)
     
-    if scanned_qr:
-        if st.button("Rensa skanning"):
-            st.query_params.clear()
-            st.rerun()
+    if scanned_qr and st.button("Rensa sökning"):
+        st.query_params.clear()
+        st.rerun()
 
     results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)] if query else st.session_state.df
-
-    if st.session_state.editing_item is not None and st.session_state.authenticated:
-        idx = st.session_state.editing_item
-        item = st.session_state.df.iloc[idx]
-        with st.form("edit_form"):
-            st.subheader(f"Redigera {item['Modell']}")
-            c1, c2 = st.columns(2)
-            u_mod = c1.text_input("Modell", value=item['Modell'])
-            u_tverk = c1.text_input("Tillverkare", value=item['Tillverkare'])
-            u_typ = c1.text_input("Typ", value=item['Typ'])
-            u_farg = c2.text_input("Färg", value=item['Färg'])
-            u_id = c2.text_input("Resurstagg/ID", value=item['Resurstagg'])
-            u_skod = c2.text_input("Streckkod", value=item['Streckkod'])
-            u_stat = st.selectbox("Status", ["Tillgänglig", "Utlånad", "Service"], index=0)
-            
-            if st.form_submit_button("Spara ändringar"):
-                st.session_state.df.at[idx, 'Modell'] = u_mod
-                st.session_state.df.at[idx, 'Tillverkare'] = u_tverk
-                st.session_state.df.at[idx, 'Typ'] = u_typ
-                st.session_state.df.at[idx, 'Färg'] = u_farg
-                st.session_state.df.at[idx, 'Resurstagg'] = clean_id(u_id)
-                st.session_state.df.at[idx, 'Streckkod'] = u_skod
-                st.session_state.df.at[idx, 'Status'] = u_stat
-                save_data(st.session_state.df)
-                st.session_state.editing_item = None
-                st.rerun()
-        if st.button("Avbryt"):
-            st.session_state.editing_item = None
-            st.rerun()
 
     for idx, row in results.iterrows():
         with st.container(border=True):
@@ -212,80 +169,51 @@ if menu == "🔍 Sök & Låna":
             with c2:
                 st.markdown(f"### {row['Modell']}")
                 st.caption(f"ID: {row['Resurstagg']} | Status: {row['Status']}")
-                if row['Status'] == 'Utlånad':
-                    st.caption(f"Lånad av: {row['Aktuell ägare']} ({row['Utlåningsdatum']})")
             with c3:
                 if row['Status'] == 'Tillgänglig':
                     if st.button("🛒 Låna", key=f"l_{idx}"):
                         st.session_state.cart.append(row.to_dict())
                         st.rerun()
-                if st.session_state.authenticated:
-                    if st.button("✏️ Edit", key=f"e_{idx}"):
-                        st.session_state.editing_item = idx
-                        st.rerun()
 
 # --- VY: ÅTERLÄMNING ---
 elif menu == "🔄 Återlämning":
-    st.header("Återlämning & Inventering")
+    st.header("Återlämning")
     borrowers = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']['Aktuell ägare'].unique()
-    
     if len(borrowers) > 0:
-        target = st.selectbox("Välj person som lämnar tillbaka:", borrowers)
-        items_to_return = st.session_state.df[st.session_state.df['Aktuell ägare'] == target]
-        
-        st.write(f"Produkter utlånade till {target}:")
-        selected_tags = []
-        for i, row in items_to_return.iterrows():
-            if st.checkbox(f"{row['Modell']} (ID: {row['Resurstagg']}) - Lånad: {row['Utlåningsdatum']}", key=f"ret_{row['Resurstagg']}"):
-                selected_tags.append(row['Resurstagg'])
-        
-        if st.button("Registrera återlämning av valda") and selected_tags:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M")
-            for tag in selected_tags:
-                st.session_state.df.loc[st.session_state.df['Resurstagg'] == tag, ['Status', 'Aktuell ägare', 'Utlåningsdatum', 'Senast inventerad']] = ['Tillgänglig', '', '', now]
-            save_data(st.session_state.df)
-            st.success("Produkter återställda!")
-            st.rerun()
+        target = st.selectbox("Vem lämnar tillbaka?", borrowers)
+        items = st.session_state.df[st.session_state.df['Aktuell ägare'] == target]
+        for i, row in items.iterrows():
+            if st.button(f"Lämna tillbaka {row['Modell']} ({row['Resurstagg']})", key=f"ret_{i}"):
+                st.session_state.df.at[i, 'Status'] = 'Tillgänglig'
+                st.session_state.df.at[i, 'Aktuell ägare'] = ''
+                save_data(st.session_state.df)
+                st.rerun()
     else: st.info("Inga aktiva utlån.")
 
 # --- VY: REGISTRERA ---
 elif menu == "➕ Registrera Nytt":
     if not st.session_state.authenticated: st.warning("Logga in för att registrera.")
     else:
-        st.header("Ny produkt")
         with st.form("new"):
-            c1, c2 = st.columns(2)
-            m = c1.text_input("Modell *")
-            i = c1.text_input("ID/SN *")
-            t = c2.text_input("Tillverkare")
-            ty = c2.text_input("Typ")
+            m = st.text_input("Modell *")
+            i = st.text_input("ID/SN *")
             f = st.camera_input("Foto")
             if st.form_submit_button("Spara"):
-                new_row = {"Modell": m, "Resurstagg": clean_id(i), "Tillverkare": t, "Typ": ty, "Status": "Tillgänglig", "Enhetsfoto": process_image_to_base64(f) if f else ""}
+                new_row = {"Modell": m, "Resurstagg": clean_id(i), "Status": "Tillgänglig", "Enhetsfoto": process_image_to_base64(f) if f else ""}
                 st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_row])], ignore_index=True)
                 save_data(st.session_state.df)
                 st.success("Sparad!")
 
 # --- VY: ADMIN ---
 elif menu == "⚙️ Admin":
-    if not st.session_state.authenticated: st.warning("Logga in med lösenordet Birka.")
+    if not st.session_state.authenticated: st.warning("Logga in.")
     else:
-        tab1, tab2, tab3 = st.tabs(["📊 Lager", "📋 Inventering", "🏷️ Bulk QR"])
+        tab1, tab2 = st.tabs(["📊 Lager", "🐞 Debug"])
         with tab1:
-            st.dataframe(st.session_state.df.drop(columns=["Enhetsfoto"]), use_container_width=True)
+            st.dataframe(st.session_state.df.drop(columns=["Enhetsfoto"]))
         with tab2:
-            st.subheader("Snabb-inventera via skanning")
-            inv_id = st.text_input("Skanna ID för att markera som OK")
-            if inv_id:
-                cid = clean_id(inv_id)
-                if cid in st.session_state.df['Resurstagg'].values:
-                    st.session_state.df.loc[st.session_state.df['Resurstagg'] == cid, 'Senast inventerad'] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    save_data(st.session_state.df)
-                    st.success(f"Inventerat {cid}")
-            st.write(st.session_state.df[['Modell', 'Resurstagg', 'Senast inventerad', 'Status']])
-        with tab3:
-            st.subheader("Bulk-utskrift av QR")
-            sel = st.multiselect("Välj produkter:", st.session_state.df['Modell'].tolist())
-            if sel:
-                to_p = st.session_state.df[st.session_state.df['Modell'].isin(sel)].to_dict('records')
-                st.components.v1.html(get_label_html(to_p), height=500, scrolling=True)
+            st.subheader("Systemlogg")
+            if st.button("Rensa Logg"): st.session_state.debug_logs = []
+            for log in st.session_state.debug_logs:
+                st.text(log)
+            st.write("Senaste skanning via URL:", st.query_params.get("qr", "Ingen"))
