@@ -130,28 +130,25 @@ if menu == "🔍 Sök & Låna":
         qr_js = """
         <div style="display: flex; justify-content: center; flex-direction: column; align-items: center;">
             <div id="reader" style="width: 100%; max-width: 400px; border: 2px solid #ccc; border-radius: 8px; overflow: hidden; background: #000;"></div>
-            <p id="scan-feedback" style="color: #666; font-family: sans-serif; margin-top: 10px;">Väntar på skanning...</p>
+            <p id="scan-feedback" style="color: #666; font-family: sans-serif; margin-top: 10px; font-weight: bold;">Sökande efter kod...</p>
         </div>
         <script src="https://unpkg.com/html5-qrcode"></script>
         <script>
             let html5QrCode = new Html5Qrcode("reader");
             
             function onScanSuccess(decodedText) {
-                document.getElementById("scan-feedback").innerText = "KOD HITTAD: " + decodedText + ". Laddar...";
-                document.getElementById("scan-feedback").style.color = "green";
+                document.getElementById("scan-feedback").innerText = "KOD HITTAD: " + decodedText;
+                document.getElementById("scan-feedback").style.color = "#4CAF50";
                 
-                // Stoppa kameran
-                html5QrCode.stop().then(() => {
-                    const url = new URL(window.top.location.href);
-                    url.searchParams.set('qr', decodedText);
-                    // Använd replace för att tvinga fram en ren omladdning med nya parametrar
-                    window.top.location.replace(url.href);
-                }).catch(err => {
-                    // Fallback om stop misslyckas
-                    const url = new URL(window.top.location.href);
-                    url.searchParams.set('qr', decodedText);
-                    window.top.location.replace(url.href);
-                });
+                // Skapa ny URL med parametern
+                const url = new URL(window.top.location.href);
+                url.searchParams.set('qr', decodedText);
+                
+                // Tvinga hela sidan att ladda om med den nya URL:en
+                window.top.location.href = url.href;
+                
+                // Stoppa skannern
+                html5QrCode.stop();
             }
             
             const config = { 
@@ -168,10 +165,10 @@ if menu == "🔍 Sök & Låna":
         </script>"""
         st.components.v1.html(qr_js, height=450)
 
-    # Visa sökfältet med värdet från URL (om det finns)
-    query = st.text_input("Sök produkt eller ID", value=scanned_qr)
+    # Använd query-parametern direkt i text_input
+    query = st.text_input("Sök produkt eller ID", value=scanned_qr, key="search_input")
     
-    if scanned_qr and st.button("Rensa skanning/sökning"):
+    if scanned_qr and st.button("Rensa skanning"):
         st.query_params.clear()
         st.rerun()
 
