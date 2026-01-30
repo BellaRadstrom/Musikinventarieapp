@@ -15,7 +15,7 @@ if 'cart' not in st.session_state: st.session_state.cart = []
 if 'editing_item' not in st.session_state: st.session_state.editing_item = None
 if 'authenticated' not in st.session_state: st.session_state.authenticated = False
 if 'debug_logs' not in st.session_state: st.session_state.debug_logs = []
-if 'scanned_val' not in st.session_state: st.session_state.scanned_val = ""
+if 'qr_search_val' not in st.session_state: st.session_state.qr_search_val = ""
 
 # --- HJÄLPFUNKTIONER ---
 def add_log(msg):
@@ -65,23 +65,29 @@ def get_label_html(items):
 # --- DATALADDNING ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+@st.cache_data(ttl=60) # Cachear i 60 sekunder för att undvika "häng"
 def load_data():
     try:
-        data = conn.read(worksheet="Sheet1", ttl=0)
+        # Vi läser utan ttl=0 här för att undvika oändlig loop vid anslutningsfel
+        data = conn.read(worksheet="Sheet1")
         cols = ["Enhetsfoto", "Modell", "Tillverkare", "Typ", "Färg", "Resurstagg", "Streckkod", "Status", "Aktuell ägare", "Utlåningsdatum", "Senast inventerad"]
         for col in cols:
             if col not in data.columns: data[col] = ""
         data["Resurstagg"] = data["Resurstagg"].apply(clean_id)
         return data.fillna("")
     except Exception as e:
-        add_log(f"Datafel: {str(e)}")
+        add_log(f"Laddningsfel: {str(e)}")
         return pd.DataFrame()
 
 st.session_state.df = load_data()
 
 def save_data(df):
-    conn.update(worksheet="Sheet1", data=df.fillna("").astype(str))
-    st.cache_data.clear()
+    try:
+        conn.update(worksheet="Sheet1", data=df.fillna("").astype(str))
+        st.cache_data.clear()
+        add_log("Data sparad till GSheets")
+    except Exception as e:
+        add_log(f"Spara-fel: {str(e)}")
 
 # --- LOGIN ---
 st.sidebar.title("🎸 Musik-IT Birka")
@@ -94,7 +100,7 @@ menu = st.sidebar.selectbox("Meny", ["🔍 Sök & Låna", "🔄 Återlämning", 
 if menu == "🔍 Sök & Låna":
     st.header("Sök & Låna")
     
-    # 1. Kamerakomponent som använder postMessage (stabilare för Pixel/Android)
+    # 1. Kamerakomponent
     with st.expander("📷 Starta QR-skanner", expanded=True):
         qr_js = """
         <div id="reader" style="width: 100%; max-width: 400px; margin: auto; border: 2px solid #ccc; border-radius: 10px; overflow: hidden;"></div>
@@ -102,46 +108,43 @@ if menu == "🔍 Sök & Låna":
         
         <script src="https://unpkg.com/html5-qrcode"></script>
         <script>
-            const html5QrCode = new Html5Qrcode("reader");
-            function onScanSuccess(decodedText) {
-                document.getElementById('feedback').innerText = "KOD HITTAD: " + decodedText;
-                document.getElementById('feedback').style.color = "#4CAF50";
-                
-                // Spara till localStorage
-                localStorage.setItem('scanned_id', decodedText);
-                
-                // Vibrera för bekräftelse
-                if (navigator.vibrate) navigator.vibrate(50);
+            if(!window.scannerStarted) {
+                const html5QrCode = new Html5Qrcode("reader");
+                const config = { fps: 10, qrbox: {width: 250, height: 250}, aspectRatio: 1.0 };
+                html5QrCode.start({ facingMode: "environment" }, config, (decodedText) => {
+                    document.getElementById('feedback').innerText = "HITTAD: " + decodedText;
+                    document.getElementById('feedback').style.color = "#4CAF50";
+                    localStorage.setItem('last_scanned_code', decodedText);
+                    if (navigator.vibrate) navigator.vibrate(50);
+                });
+                window.scannerStarted = true;
             }
-            const config = { fps: 10, qrbox: {width: 250, height: 250}, aspectRatio: 1.0 };
-            html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess);
         </script>
         """
         st.components.v1.html(qr_js, height=450)
 
-    # 2. Den Manuella Överföringsknappen (nu med en "Direct Pull" logik)
+    # 2. Den Manuella Överföringsknappen
     if st.button("📥 HÄMTA SKANNAD KOD", use_container_width=True, type="primary"):
-        # Vi använder en Query Parameter som triggas via JS för att Streamlit ska märka ändringen
-        js_pull = """
+        js_get = """
         <script>
-            const code = localStorage.getItem('scanned_id');
-            if (code) {
+            const code = localStorage.getItem('last_scanned_code');
+            if(code) {
+                // Vi skickar värdet via URL för att Streamlit ska plocka upp det i nästa körning
                 const url = new URL(window.location.href);
                 url.searchParams.set('qr', code);
                 window.location.href = url.href;
             } else {
-                alert("Ingen kod hittades i minnet. Skanna igen!");
+                alert("Ingen kod hittades i minnet.");
             }
         </script>
         """
-        st.components.v1.html(js_pull, height=0)
+        st.components.v1.html(js_get, height=0)
 
     # Hämta värdet från URL
-    scanned_query = st.query_params.get("qr", "")
+    url_val = st.query_params.get("qr", "")
+    query = st.text_input("Sök produkt eller ID", value=url_val)
     
-    query = st.text_input("Sök produkt eller ID", value=scanned_query)
-    
-    if scanned_query and st.button("Rensa sökning"):
+    if url_val and st.button("Rensa sökning"):
         st.query_params.clear()
         st.rerun()
 
