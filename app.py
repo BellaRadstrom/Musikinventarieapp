@@ -18,7 +18,6 @@ if 'cart' not in st.session_state: st.session_state.cart = []
 if 'inv_scanned' not in st.session_state: st.session_state.inv_scanned = []
 if 'last_checkout' not in st.session_state: st.session_state.last_checkout = None
 if 'temp_sn' not in st.session_state: st.session_state.temp_sn = ""
-if 'qr_scan_result' not in st.session_state: st.session_state.qr_scan_result = ""
 
 def add_log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -136,36 +135,38 @@ if st.session_state.last_checkout:
 if menu == "🔍 Sök & Låna":
     st.header("Sök & Låna")
     
-    # Webb-baserad QR-skanner (JavaScript)
-    with st.expander("📷 Öppna QR-skanner"):
-        st.markdown("""
-        <div id="reader" style="width: 100%;"></div>
+    # QR-SÖK LOGIK
+    # Vi använder en URL-parameter för att ta emot skannad data
+    query_params = st.query_params
+    default_query = query_params.get("qr_code", "")
+    
+    with st.expander("📷 Starta QR-kamera"):
+        # Denna HTML-komponent kräver 'camera' permission för att fungera i webbläsaren
+        qr_component = f"""
+        <div id="reader" style="width: 100%; max-width: 400px; margin: auto;"></div>
         <script src="https://unpkg.com/html5-qrcode"></script>
         <script>
-            function onScanSuccess(decodedText, decodedResult) {
-                // Skicka resultatet till Streamlit genom att skapa en länk eller ändra URL
-                window.parent.postMessage({
-                    type: 'streamlit:set_widget_value',
-                    data: {id: 'qr_input_field', value: decodedText}
-                }, '*');
-                // Stoppa skannern efter lyckad läsning
-                html5QrcodeScanner.clear();
-            }
-            let html5QrcodeScanner = new Html5QrcodeScanner(
-                "reader", { fps: 10, qrbox: 250 });
+            function onScanSuccess(decodedText, decodedResult) {{
+                // Skickar resultatet till URL-parametrar för att uppdatera Streamlit
+                const url = new URL(window.location);
+                url.searchParams.set('qr_code', decodedText);
+                window.parent.location.href = url.href;
+            }}
+            let html5QrcodeScanner = new Html5QrcodeScanner("reader", {{ fps: 10, qrbox: 250 }});
             html5QrcodeScanner.render(onScanSuccess);
         </script>
-        """, unsafe_allow_html=True)
+        """
+        st.components.v1.html(qr_component, height=450)
+        st.info("Rikta kameran mot QR-koden. Sidan laddas om när den hittat en kod.")
 
-    # Sökfält (här hamnar skannat värde)
-    query = st.text_input("Sök produkt eller skanna QR...", key="qr_input_field", placeholder="Skriv här eller skanna ovan...")
+    query = st.text_input("Sök produkt eller ID", value=default_query, placeholder="Skriv här eller använd kameran ovan...")
     
     if query:
         results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)]
     else:
         results = st.session_state.df
 
-    # Redigeringsläge
+    # Redigeringsläge (Helt intakt enligt ditt önskemål)
     if st.session_state.editing_item is not None:
         idx = st.session_state.editing_item
         item = st.session_state.df.iloc[idx]
@@ -197,10 +198,8 @@ if menu == "🔍 Sök & Låna":
                     st.session_state.df.at[idx, 'Färg'] = u_farg
                     st.session_state.df.at[idx, 'Streckkod'] = u_skod
                     st.session_state.df.at[idx, 'Status'] = u_stat
-                    
                     if new_img:
                         st.session_state.df.at[idx, 'Enhetsfoto'] = process_image_to_base64(new_img)
-                    
                     if save_data(st.session_state.df):
                         st.success("Ändringar sparade!")
                         st.session_state.editing_item = None
