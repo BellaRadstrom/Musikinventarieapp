@@ -7,6 +7,7 @@ import qrcode
 from io import BytesIO
 from PIL import Image
 import base64
+from streamlit_qr_scanner import streamlit_qr_scanner
 
 # --- CONFIG ---
 st.set_page_config(page_title="Musik-Inventering Pro", layout="wide", page_icon="🎸")
@@ -15,9 +16,9 @@ st.set_page_config(page_title="Musik-Inventering Pro", layout="wide", page_icon=
 if 'debug_log' not in st.session_state: st.session_state.debug_log = []
 if 'editing_item' not in st.session_state: st.session_state.editing_item = None
 if 'cart' not in st.session_state: st.session_state.cart = []
-if 'inv_scanned' not in st.session_state: st.session_state.inv_scanned = []
 if 'last_checkout' not in st.session_state: st.session_state.last_checkout = None
 if 'temp_sn' not in st.session_state: st.session_state.temp_sn = ""
+if 'qr_search_value' not in st.session_state: st.session_state.qr_search_value = ""
 
 def add_log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -135,16 +136,23 @@ if st.session_state.last_checkout:
 if menu == "🔍 Sök & Låna":
     st.header("Sök & Låna")
     
-    # QR-SÖK LOGIK: Söker brett men inkluderar Resurstagg
-    query = st.text_input("Skanna QR eller sök produkt...", placeholder="Skanna eller skriv här...")
+    col_search, col_qr = st.columns([3, 1])
     
-    if query:
-        # Söker i alla kolumner
-        results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)]
-    else:
-        results = st.session_state.df
+    with col_qr:
+        if st.button("📷 Skanna QR med kamera"):
+            qr_code = streamlit_qr_scanner(key='qr_scanner')
+            if qr_code:
+                st.session_state.qr_search_value = qr_code
+                st.rerun()
 
-    # Redigeringsläge
+    with col_search:
+        query = st.text_input("Sök produkt eller ID", value=st.session_state.qr_search_value, placeholder="Skriv eller skanna...")
+        if query != st.session_state.qr_search_value:
+            st.session_state.qr_search_value = query
+
+    results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(st.session_state.qr_search_value, case=False)).any(axis=1)] if st.session_state.qr_search_value else st.session_state.df
+
+    # Redigeringsläge (Samma som tidigare)
     if st.session_state.editing_item is not None:
         idx = st.session_state.editing_item
         item = st.session_state.df.iloc[idx]
@@ -161,14 +169,10 @@ if menu == "🔍 Sök & Låna":
                     u_sn = st.text_input("Serienummer / ID", value=item['Resurstagg'])
                     u_farg = st.text_input("Färg", value=item['Färg'])
                     u_skod = st.text_input("Streckkod", value=item['Streckkod'])
-                
                 u_stat = st.selectbox("Status", ["Tillgänglig", "Utlånad", "Service"], 
                                      index=["Tillgänglig", "Utlånad", "Service"].index(item['Status']) if item['Status'] in ["Tillgänglig", "Utlånad", "Service"] else 0)
-                
                 new_img = st.camera_input("Ändra foto")
-                
                 if st.form_submit_button("Spara alla ändringar"):
-                    # Om ID ändras måste vi uppdatera båda fälten
                     st.session_state.df.at[idx, 'Modell'] = u_mod
                     st.session_state.df.at[idx, 'Tillverkare'] = u_tverk
                     st.session_state.df.at[idx, 'Typ'] = u_typ
@@ -177,10 +181,7 @@ if menu == "🔍 Sök & Låna":
                     st.session_state.df.at[idx, 'Färg'] = u_farg
                     st.session_state.df.at[idx, 'Streckkod'] = u_skod
                     st.session_state.df.at[idx, 'Status'] = u_stat
-                    
-                    if new_img:
-                        st.session_state.df.at[idx, 'Enhetsfoto'] = process_image_to_base64(new_img)
-                    
+                    if new_img: st.session_state.df.at[idx, 'Enhetsfoto'] = process_image_to_base64(new_img)
                     if save_data(st.session_state.df):
                         st.success("Ändringar sparade!")
                         st.session_state.editing_item = None
@@ -229,24 +230,16 @@ elif menu == "➕ Registrera Nytt":
             sn_in = st.text_input("Serienummer / ID *", value=st.session_state.temp_sn)
             farg_in = st.text_input("Färg")
             skod_in = st.text_input("Streckkod")
-        
         foto_in = st.camera_input("Produktfoto")
-        
         if st.form_submit_button("Spara"):
             if m_in and sn_in:
                 new_id = clean_id(sn_in)
-                new_row = {
-                    "Enhetsfoto": process_image_to_base64(foto_in) if foto_in else "",
-                    "Modell": m_in, "Tillverkare": t_in, "Typ": typ_in, "Färg": farg_in,
-                    "Resurstagg": new_id, "Serienummer": new_id, "Streckkod": skod_in,
-                    "Status": "Tillgänglig", "Aktuell ägare": "", "Utlåningsdatum": ""
-                }
+                new_row = {"Enhetsfoto": process_image_to_base64(foto_in) if foto_in else "", "Modell": m_in, "Tillverkare": t_in, "Typ": typ_in, "Färg": farg_in, "Resurstagg": new_id, "Serienummer": new_id, "Streckkod": skod_in, "Status": "Tillgänglig", "Aktuell ägare": "", "Utlåningsdatum": ""}
                 st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_row])], ignore_index=True)
                 if save_data(st.session_state.df):
                     st.session_state.temp_sn = ""
                     st.success(f"Sparad: {m_in}")
-            else:
-                st.error("Modell och Serienummer krävs!")
+            else: st.error("Modell och Serienummer krävs!")
 
 # --- VY: ÅTERLÄMNING ---
 elif menu == "🔄 Återlämning":
@@ -272,8 +265,7 @@ elif menu == "🔄 Återlämning":
 elif menu == "⚙️ Admin & Inventering":
     st.header("Administration")
     t1, t2, t3 = st.tabs(["📊 Lagerlista", "🏷️ Bulk-etiketter", "🛠️ Logg"])
-    with t1:
-        st.dataframe(st.session_state.df.drop(columns=["Enhetsfoto"]), use_container_width=True)
+    with t1: st.dataframe(st.session_state.df.drop(columns=["Enhetsfoto"]), use_container_width=True)
     with t2:
         opts = st.session_state.df.apply(lambda r: f"{r['Modell']} | SN:{r['Serienummer']}", axis=1).tolist()
         sel = st.multiselect("Välj för utskrift:", opts)
@@ -283,7 +275,6 @@ elif menu == "⚙️ Admin & Inventering":
                 tag = o.split("| SN:")[-1]
                 match = st.session_state.df[st.session_state.df['Resurstagg'] == tag]
                 if not match.empty: to_p.append(match.iloc[0].to_dict())
-            if st.button("Generera"):
-                st.components.v1.html(get_label_html(to_p), height=600, scrolling=True)
+            if st.button("Generera"): st.components.v1.html(get_label_html(to_p), height=600, scrolling=True)
     with t3:
         for log in reversed(st.session_state.debug_log): st.text(log)
