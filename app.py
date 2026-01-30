@@ -135,38 +135,43 @@ if st.session_state.last_checkout:
 if menu == "🔍 Sök & Låna":
     st.header("Sök & Låna")
     
-    # QR-SÖK LOGIK
-    # Vi använder en URL-parameter för att ta emot skannad data
-    query_params = st.query_params
-    default_query = query_params.get("qr_code", "")
+    # Hämta skannat värde från URL
+    q_params = st.query_params
+    scanned_val = q_params.get("qr", "")
     
-    with st.expander("📷 Starta QR-kamera"):
-        # Denna HTML-komponent kräver 'camera' permission för att fungera i webbläsaren
-        qr_component = f"""
-        <div id="reader" style="width: 100%; max-width: 400px; margin: auto;"></div>
+    with st.expander("📷 Öppna QR-skanner", expanded=False):
+        # JavaScript som tvingar omladdning av topp-fönstret för att Streamlit ska plocka upp parametern
+        qr_html = f"""
+        <div id="qr-reader" style="width:100%"></div>
         <script src="https://unpkg.com/html5-qrcode"></script>
         <script>
             function onScanSuccess(decodedText, decodedResult) {{
-                // Skickar resultatet till URL-parametrar för att uppdatera Streamlit
-                const url = new URL(window.location);
-                url.searchParams.set('qr_code', decodedText);
-                window.parent.location.href = url.href;
+                let url = new URL(window.top.location.href);
+                url.searchParams.set('qr', decodedText);
+                window.top.location.href = url.href;
             }}
-            let html5QrcodeScanner = new Html5QrcodeScanner("reader", {{ fps: 10, qrbox: 250 }});
+            let html5QrcodeScanner = new Html5QrcodeScanner(
+                "qr-reader", {{ fps: 15, qrbox: 250 }}
+            );
             html5QrcodeScanner.render(onScanSuccess);
         </script>
         """
-        st.components.v1.html(qr_component, height=450)
-        st.info("Rikta kameran mot QR-koden. Sidan laddas om när den hittat en kod.")
+        st.components.v1.html(qr_html, height=500)
 
-    query = st.text_input("Sök produkt eller ID", value=default_query, placeholder="Skriv här eller använd kameran ovan...")
+    # Om vi har ett skannat värde, använd det som default i sökfältet
+    query = st.text_input("Sök produkt eller ID", value=scanned_val, placeholder="Skriv här eller skanna ovan...")
     
+    # Rensa skanning (knapp för att tömma URL-parametern om man vill söka på nytt)
+    if scanned_val and st.button("Rensa skanning"):
+        st.query_params.clear()
+        st.rerun()
+
     if query:
         results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)]
     else:
         results = st.session_state.df
 
-    # Redigeringsläge (Helt intakt enligt ditt önskemål)
+    # Redigeringsläge (Helt intakt)
     if st.session_state.editing_item is not None:
         idx = st.session_state.editing_item
         item = st.session_state.df.iloc[idx]
