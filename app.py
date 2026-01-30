@@ -56,21 +56,6 @@ def get_label_html(items):
     html += "</div><br><button onclick='window.print()'>Skriv ut etiketter</button>"
     return html
 
-def get_packing_list_printable(borrower, items):
-    date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    list_items = "".join([f"<li>{item['Modell']} ({item['Resurstagg']})</li>" for item in items])
-    html = f"""
-    <html><body onload="window.print()">
-    <div style="font-family: sans-serif; padding: 40px; color: black;">
-        <h1>Packlista / Kvitto</h1>
-        <p><b>Låntagare:</b> {borrower}</p>
-        <p><b>Datum:</b> {date_str}</p>
-        <hr><ul>{list_items}</ul><hr>
-        <p>Tack för att du lånar av Birka Musik-IT!</p>
-    </div>
-    </body></html>"""
-    return html
-
 # --- DATALADDNING ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
@@ -94,8 +79,6 @@ def save_data(df):
 st.sidebar.title("🎸 Musik-IT Birka")
 pwd = st.sidebar.text_input("Lösenord för Admin/Edit", type="password")
 st.session_state.authenticated = (pwd == "Birka")
-if pwd != "" and not st.session_state.authenticated:
-    st.sidebar.error("Fel lösenord")
 
 menu = st.sidebar.selectbox("Meny", ["🔍 Sök & Låna", "🔄 Återlämning", "➕ Registrera Nytt", "⚙️ Admin"])
 
@@ -114,11 +97,27 @@ if st.session_state.cart:
         st.rerun()
 
 if st.session_state.last_checkout:
-    st.sidebar.success(f"Lån registrerat till {st.session_state.last_checkout['borrower']}")
-    # SKAPAR EN DIREKTLÄNK FÖR UTSKRIFT SOM ÖPPNAS I NY FLIK
-    b64_html = base64.b64encode(get_packing_list_printable(st.session_state.last_checkout['borrower'], st.session_state.last_checkout['items']).encode()).decode()
-    href = f'<a href="data:text/html;base64,{b64_html}" target="_blank" style="text-decoration: none;"><button style="width: 100%; padding: 10px; background-color: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer;">🖨️ SKRIV UT PACKLISTA</button></a>'
-    st.sidebar.markdown(href, unsafe_allow_html=True)
+    st.sidebar.success(f"Lån klart till {st.session_state.last_checkout['borrower']}")
+    # Ny robust utskriftsmetod
+    list_items_html = "".join([f"<li>{i['Modell']} ({i['Resurstagg']})</li>" for i in st.session_state.last_checkout['items']])
+    print_js = f"""
+    <script>
+    function printList() {{
+        var win = window.open('', '', 'height=700,width=700');
+        win.document.write('<html><body style="font-family:sans-serif; padding:50px;">');
+        win.document.write('<h1>Packlista - Birka Musik-IT</h1>');
+        win.document.write('<p><b>Låntagare:</b> {st.session_state.last_checkout['borrower']}</p>');
+        win.document.write('<p><b>Datum:</b> {datetime.now().strftime("%Y-%m-%d")}</p><hr><ul>');
+        win.document.write('{list_items_html}');
+        win.document.write('</ul><hr><p>Tack!</p>');
+        win.document.write('</body></html>');
+        win.document.close();
+        win.print();
+    }}
+    </script>
+    <button onclick="printList()" style="width:100%; padding:10px; background:#4CAF50; color:white; border:none; border-radius:5px; cursor:pointer;">🖨️ SKRIV UT PACKLISTA</button>
+    """
+    st.sidebar.components.v1.html(print_js, height=50)
 
 # --- VY: SÖK & LÅNA ---
 if menu == "🔍 Sök & Låna":
@@ -126,11 +125,9 @@ if menu == "🔍 Sök & Låna":
     scanned_qr = st.query_params.get("qr", "")
     
     with st.expander("📷 Starta QR-skanner", expanded=not bool(scanned_qr)):
-        # OPTIMERAD SKANNER FÖR PIXEL 8 OCH ANDROID
         qr_js = """
         <div style="display: flex; justify-content: center; flex-direction: column; align-items: center;">
             <div id="reader" style="width: 100%; max-width: 400px; border: 2px solid #ccc; border-radius: 8px;"></div>
-            <p id="status-msg" style="font-family: sans-serif; margin-top: 10px; color: #666;">Söker kamera...</p>
         </div>
         <script src="https://unpkg.com/html5-qrcode"></script>
         <script>
@@ -139,26 +136,14 @@ if menu == "🔍 Sök & Låna":
                 url.searchParams.set('qr', decodedText);
                 window.top.location.href = url.href;
             }
-            
-            // Försök starta kameran med specifika Android-inställningar
             let html5QrCode = new Html5Qrcode("reader");
-            const config = { 
-                fps: 20, 
-                qrbox: {width: 250, height: 250},
-                aspectRatio: 1.0
-            };
-
             html5QrCode.start(
                 { facingMode: "environment" }, 
-                config, 
+                { fps: 20, qrbox: {width: 250, height: 250}, videoConstraints: { focusMode: "continuous" } },
                 onScanSuccess
-            ).then(() => {
-                document.getElementById("status-msg").innerText = "Siktar på QR-kod...";
-            }).catch(err => {
-                document.getElementById("status-msg").innerText = "Kamerafel: " + err;
-            });
+            );
         </script>"""
-        st.components.v1.html(qr_js, height=480)
+        st.components.v1.html(qr_js, height=450)
 
     query = st.text_input("Sök produkt eller ID", value=scanned_qr)
     if scanned_qr and st.button("Rensa sökning"):
@@ -204,6 +189,8 @@ if menu == "🔍 Sök & Låna":
             with c2:
                 st.markdown(f"### {row['Modell']}")
                 st.caption(f"ID: {row['Resurstagg']} | Status: {row['Status']}")
+                if row['Status'] == 'Utlånad':
+                    st.caption(f"Lånad av: {row['Aktuell ägare']} ({row['Utlåningsdatum']})")
             with c3:
                 if row['Status'] == 'Tillgänglig':
                     if st.button("🛒 Låna", key=f"l_{idx}"):
@@ -216,13 +203,25 @@ if menu == "🔍 Sök & Låna":
 
 # --- VY: ÅTERLÄMNING ---
 elif menu == "🔄 Återlämning":
-    st.header("Återlämning")
+    st.header("Återlämning & Inventering")
     borrowers = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']['Aktuell ägare'].unique()
+    
     if len(borrowers) > 0:
-        target = st.selectbox("Välj låntagare", borrowers)
-        if st.button("Registrera återlämning"):
-            st.session_state.df.loc[st.session_state.df['Aktuell ägare'] == target, ['Status', 'Aktuell ägare', 'Utlåningsdatum']] = ['Tillgänglig', '', '']
+        target = st.selectbox("Välj person som lämnar tillbaka:", borrowers)
+        items_to_return = st.session_state.df[st.session_state.df['Aktuell ägare'] == target]
+        
+        st.write(f"Produkter utlånade till {target}:")
+        selected_tags = []
+        for i, row in items_to_return.iterrows():
+            if st.checkbox(f"{row['Modell']} (ID: {row['Resurstagg']}) - Lånad: {row['Utlåningsdatum']}", key=f"ret_{row['Resurstagg']}"):
+                selected_tags.append(row['Resurstagg'])
+        
+        if st.button("Registrera återlämning av valda") and selected_tags:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            for tag in selected_tags:
+                st.session_state.df.loc[st.session_state.df['Resurstagg'] == tag, ['Status', 'Aktuell ägare', 'Utlåningsdatum', 'Senast inventerad']] = ['Tillgänglig', '', '', now]
             save_data(st.session_state.df)
+            st.success("Produkter återställda och inventerade!")
             st.rerun()
     else: st.info("Inga aktiva utlån.")
 
@@ -252,17 +251,17 @@ elif menu == "⚙️ Admin":
         with tab1:
             st.dataframe(st.session_state.df.drop(columns=["Enhetsfoto"]), use_container_width=True)
         with tab2:
-            st.subheader("Inventering")
-            inv_id = st.text_input("Skanna ID")
+            st.subheader("Snabb-inventera via skanning")
+            inv_id = st.text_input("Skanna ID för att markera som OK")
             if inv_id:
                 cid = clean_id(inv_id)
                 if cid in st.session_state.df['Resurstagg'].values:
                     st.session_state.df.loc[st.session_state.df['Resurstagg'] == cid, 'Senast inventerad'] = datetime.now().strftime("%Y-%m-%d %H:%M")
                     save_data(st.session_state.df)
                     st.success(f"Inventerat {cid}")
-            st.write(st.session_state.df[['Modell', 'Resurstagg', 'Senast inventerad']])
+            st.write(st.session_state.df[['Modell', 'Resurstagg', 'Senast inventerad', 'Status']])
         with tab3:
-            st.subheader(" Bulk-utskrift av QR")
+            st.subheader("Bulk-utskrift av QR")
             sel = st.multiselect("Välj produkter:", st.session_state.df['Modell'].tolist())
             if sel:
                 to_p = st.session_state.df[st.session_state.df['Modell'].isin(sel)].to_dict('records')
