@@ -39,18 +39,17 @@ def generate_qr(data):
     return buf.getvalue()
 
 def get_label_html(items):
-    # Genererar HTML för en eller flera etiketter (3x4 cm format)
-    html = "<div style='display: flex; flex-wrap: wrap; gap: 10px; justify-content: center;'>"
+    html = "<div style='display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-start;'>"
     for item in items:
         qr_b64 = base64.b64encode(generate_qr(str(item['Resurstagg']))).decode()
         html += f"""
-        <div style="width: 3.8cm; height: 2.8cm; border: 1px solid #000; padding: 5px; text-align: center; font-family: Arial, sans-serif; background-color: white; color: black;">
+        <div style="width: 3.8cm; height: 2.8cm; border: 1px solid #000; padding: 5px; text-align: center; font-family: Arial, sans-serif; background-color: white; color: black; margin-bottom: 5px;">
             <img src="data:image/png;base64,{qr_b64}" style="width: 1.6cm;"><br>
-            <div style="font-size: 11px; font-weight: bold; margin-top: 2px;">{item['Modell'][:22]}</div>
+            <div style="font-size: 11px; font-weight: bold; margin-top: 2px;">{str(item['Modell'])[:22]}</div>
             <div style="font-size: 9px;">ID: {item['Resurstagg']}</div>
         </div>
         """
-    html += "</div><div style='text-align:center; margin-top:20px;'><button onclick='window.print()'>Skriv ut valda etiketter</button></div>"
+    html += "</div><div style='text-align:center; margin-top:20px;'><button onclick='window.print()'>Skriv ut dessa etiketter</button></div>"
     return html
 
 def get_packing_list_html(borrower, items):
@@ -101,7 +100,6 @@ if st.session_state.cart:
     if borrower:
         if st.sidebar.button("Bekräfta utlån ✅", type="primary"):
             today = datetime.now().strftime("%Y-%m-%d")
-            # Spara kopia för packlistan innan vi rensar korgen
             st.session_state.last_checkout = {"borrower": borrower, "items": list(st.session_state.cart)}
             
             for item in st.session_state.cart:
@@ -124,7 +122,6 @@ if st.session_state.last_checkout:
 if menu == "🔍 Sök & Låna":
     st.header("Sök & Låna")
     
-    # EDITERA
     if st.session_state.editing_item is not None:
         idx = st.session_state.editing_item
         item = st.session_state.df.iloc[idx]
@@ -217,14 +214,22 @@ elif menu == "⚙️ Admin & Inventering":
 
     with t3:
         st.subheader("Massutskrift av etiketter")
-        selected_labels = st.multiselect("Välj produkter för utskrift:", 
-                                         st.session_state.df.apply(lambda r: f"{r['Modell']} ({r['Resurstagg']})", axis=1))
-        if selected_labels:
+        # Använd Resurstagg direkt som nyckel för att undvika index-fel
+        label_options = st.session_state.df.apply(lambda r: f"{r['Modell']} (ID: {r['Resurstagg']})", axis=1).tolist()
+        selected_options = st.multiselect("Välj produkter för utskrift:", label_options)
+        
+        if selected_options:
             items_to_print = []
-            for label in selected_labels:
-                tag = label.split("(")[-1].replace(")", "")
-                item_row = st.session_state.df[st.session_state.df['Resurstagg'] == tag].iloc[0]
-                items_to_print.append(item_row.to_dict())
+            for opt in selected_options:
+                # Extrahera ID:t mer robust
+                try:
+                    tag = opt.split("(ID: ")[-1].replace(")", "")
+                    match = st.session_state.df[st.session_state.df['Resurstagg'] == tag]
+                    if not match.empty:
+                        items_to_print.append(match.iloc[0].to_dict())
+                except Exception:
+                    continue
             
-            if st.button("Generera valda etiketter"):
-                st.components.v1.html(get_label_html(items_to_print), height=600, scrolling=True)
+            if items_to_print:
+                if st.button("Generera valda etiketter"):
+                    st.components.v1.html(get_label_html(items_to_print), height=600, scrolling=True)
