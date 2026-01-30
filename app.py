@@ -18,10 +18,6 @@ if 'cart' not in st.session_state: st.session_state.cart = []
 if 'last_checkout' not in st.session_state: st.session_state.last_checkout = None
 if 'authenticated' not in st.session_state: st.session_state.authenticated = False
 
-def add_log(msg):
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    st.session_state.debug_log.append(f"[{timestamp}] {msg}")
-
 # --- HJÄLPFUNKTIONER ---
 def clean_id(val):
     if pd.isna(val) or val == "": return ""
@@ -37,17 +33,8 @@ def process_image_to_base64(image_file):
         if img.mode in ("RGBA", "P"): img = img.convert("RGB")
         img.save(buffered, format="JPEG", quality=70)
         return f"data:image/jpeg;base64,{base64.b64encode(buffered.getvalue()).decode()}"
-    except Exception as e:
+    except Exception:
         return ""
-
-def generate_qr(data):
-    qr = qrcode.QRCode(version=1, box_size=10, border=2)
-    qr.add_data(str(data))
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
 
 def get_packing_list_html(borrower, items):
     date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -62,16 +49,22 @@ def get_packing_list_html(borrower, items):
     </div>
     """
 
-# --- ANSLUTNING ---
+# --- ANSLUTNING & DATALADDNING ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data():
     try:
         data = conn.read(worksheet="Sheet1", ttl=0)
+        # Säkerställ att alla nödvändiga kolumner finns
+        required_cols = ["Enhetsfoto", "Modell", "Resurstagg", "Status", "Aktuell ägare", "Utlåningsdatum", "Senast inventerad"]
+        for col in required_cols:
+            if col not in data.columns:
+                data[col] = ""
+        
         if "Resurstagg" in data.columns:
             data["Resurstagg"] = data["Resurstagg"].apply(clean_id)
         return data.fillna("")
-    except Exception as e:
+    except Exception:
         return pd.DataFrame(columns=["Enhetsfoto", "Modell", "Resurstagg", "Status", "Aktuell ägare", "Utlåningsdatum", "Senast inventerad"])
 
 def save_data(df):
@@ -84,23 +77,20 @@ def save_data(df):
 
 st.session_state.df = load_data()
 
-# --- LOGIN CHECK ---
+# --- LOGIN ---
 def check_password():
     if st.session_state.authenticated:
         return True
-    pwd = st.sidebar.text_input("Lösenord för Admin/Edit", type="password")
+    pwd = st.sidebar.text_input("Lösenord (Birka)", type="password")
     if pwd == "Birka":
         st.session_state.authenticated = True
         st.rerun()
-    elif pwd != "":
-        st.sidebar.error("Fel lösenord")
     return False
 
 # --- SIDEBAR ---
 st.sidebar.title("🎸 Musik-IT Birka")
 menu = st.sidebar.selectbox("Meny", ["🔍 Sök & Låna", "🔄 Återlämning", "➕ Registrera Nytt", "⚙️ Admin"])
 
-# Varukorg & Packlista
 if st.session_state.cart:
     st.sidebar.subheader("🛒 Varukorg")
     borrower = st.sidebar.text_input("Namn på låntagare")
@@ -109,9 +99,9 @@ if st.session_state.cart:
         st.session_state.last_checkout = {"borrower": borrower, "items": list(st.session_state.cart)}
         for item in st.session_state.cart:
             st.session_state.df.loc[st.session_state.df['Resurstagg'] == item['Resurstagg'], ['Status', 'Aktuell ägare', 'Utlåningsdatum']] = ['Utlånad', borrower, today]
-        if save_data(st.session_state.df):
-            st.session_state.cart = []
-            st.rerun()
+        save_data(st.session_state.df)
+        st.session_state.cart = []
+        st.rerun()
 
 if st.session_state.last_checkout:
     with st.sidebar.expander("📄 Senaste packlista", expanded=True):
@@ -124,24 +114,25 @@ if menu == "🔍 Sök & Låna":
     scanned_qr = st.query_params.get("qr", "")
     
     with st.expander("📷 Starta QR-skanner", expanded=not bool(scanned_qr)):
-        qr_js = f"""
-        <div id="reader" style="width: 100%; max-width: 400px; margin: auto;"></div>
+        # Förbättrad skanner-motor för Android/Pixel
+        qr_js = """
+        <div id="reader" style="width: 100%;"></div>
         <script src="https://unpkg.com/html5-qrcode"></script>
         <script>
-            function onScanSuccess(decodedText) {{
+            function onScanSuccess(decodedText) {
                 const url = new URL(window.top.location.href);
                 url.searchParams.set('qr', decodedText);
                 window.top.location.href = url.href;
-            }}
-            let scanner = new Html5QrcodeScanner("reader", {{ 
-                fps: 10, 
-                qrbox: 250,
-                videoConstraints: {{ facingMode: "environment" }}
-            }});
-            scanner.render(onScanSuccess);
+            }
+            let html5QrCode = new Html5Qrcode("reader");
+            html5QrCode.start(
+                { facingMode: "environment" }, 
+                { fps: 15, qrbox: {width: 250, height: 250} },
+                onScanSuccess
+            ).catch(err => console.log(err));
         </script>
         """
-        st.components.v1.html(qr_js, height=450)
+        st.components.v1.html(qr_js, height=400)
 
     query = st.text_input("Sök i registret", value=scanned_qr)
     if scanned_qr and st.button("Rensa skanning"):
@@ -150,7 +141,6 @@ if menu == "🔍 Sök & Låna":
 
     results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)] if query else st.session_state.df
 
-    # Editering (Låst med lösenord)
     if st.session_state.editing_item is not None:
         if check_password():
             idx = st.session_state.editing_item
@@ -194,11 +184,10 @@ elif menu == "🔄 Återlämning":
         if st.button("Registrera återlämning"):
             st.session_state.df.loc[st.session_state.df['Aktuell ägare'] == target, ['Status', 'Aktuell ägare', 'Utlåningsdatum']] = ['Tillgänglig', '', '']
             save_data(st.session_state.df)
-            st.success("Återlämning klar!")
             st.rerun()
     else: st.info("Inga utlånade prylar.")
 
-# --- VY: NY REGISTRERING ---
+# --- VY: REGISTRERA NYTT ---
 elif menu == "➕ Registrera Nytt":
     if check_password():
         st.header("Lägg till utrustning")
@@ -207,7 +196,7 @@ elif menu == "➕ Registrera Nytt":
             i = st.text_input("Resurstagg/ID")
             f = st.camera_input("Foto")
             if st.form_submit_button("Spara"):
-                new_row = {"Modell": m, "Resurstagg": clean_id(i), "Status": "Tillgänglig", "Enhetsfoto": process_image_to_base64(f) if f else ""}
+                new_row = {"Modell": m, "Resurstagg": clean_id(i), "Status": "Tillgänglig", "Enhetsfoto": process_image_to_base64(f) if f else "", "Senast inventerad": ""}
                 st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_row])], ignore_index=True)
                 save_data(st.session_state.df)
                 st.success("Tillagd!")
@@ -220,23 +209,20 @@ elif menu == "⚙️ Admin":
         
         with tab1:
             st.dataframe(st.session_state.df.drop(columns=["Enhetsfoto"]), use_container_width=True)
-            if st.button("Spara ändringar till Sheets"):
+            if st.button("Spara till Sheets"):
                 save_data(st.session_state.df)
-                st.toast("Data sparad!")
 
         with tab2:
-            st.subheader("Inventeringskontroll")
-            inv_id = st.text_input("Skanna ID för att inventera")
+            st.subheader("Inventering")
+            inv_id = st.text_input("Skanna/Skriv ID")
             if inv_id:
-                clean_inv = clean_id(inv_id)
-                if clean_inv in st.session_state.df['Resurstagg'].values:
-                    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    st.session_state.df.loc[st.session_state.df['Resurstagg'] == clean_inv, 'Senast inventerad'] = now
-                    st.success(f"Inventerat: {clean_inv} den {now}")
+                cid = clean_id(inv_id)
+                if cid in st.session_state.df['Resurstagg'].values:
+                    st.session_state.df.loc[st.session_state.df['Resurstagg'] == cid, 'Senast inventerad'] = datetime.now().strftime("%Y-%m-%d %H:%M")
                     save_data(st.session_state.df)
-                else:
-                    st.error("ID hittades inte i systemet.")
+                    st.success(f"Inventerat: {cid}")
             
-            st.divider()
-            st.caption("Föremål som inte inventerats senaste 30 dagarna markeras här.")
-            st.write(st.session_state.df[['Modell', 'Resurstagg', 'Senast inventerad']])
+            # Säkrad visning
+            disp_cols = ['Modell', 'Resurstagg', 'Senast inventerad']
+            st.write(st.session_state.df[disp_cols])
+            
