@@ -56,17 +56,20 @@ def get_label_html(items):
     html += "</div><br><button onclick='window.print()'>Skriv ut etiketter</button>"
     return html
 
-def get_packing_list_html(borrower, items):
+def get_packing_list_printable(borrower, items):
     date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     list_items = "".join([f"<li>{item['Modell']} ({item['Resurstagg']})</li>" for item in items])
-    return f"""
-    <div style="font-family: sans-serif; padding: 20px; border: 2px solid #333; background: white; color: black;">
-        <h2>Utlåningskvitto - Birka</h2>
+    html = f"""
+    <html><body onload="window.print()">
+    <div style="font-family: sans-serif; padding: 40px; color: black;">
+        <h1>Packlista / Kvitto</h1>
         <p><b>Låntagare:</b> {borrower}</p>
         <p><b>Datum:</b> {date_str}</p>
         <hr><ul>{list_items}</ul><hr>
-        <button onclick="window.print()" style="padding: 10px; cursor: pointer;">Skriv ut packlista</button>
-    </div>"""
+        <p>Tack för att du lånar av Birka Musik-IT!</p>
+    </div>
+    </body></html>"""
+    return html
 
 # --- DATALADDNING ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -74,8 +77,8 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 def load_data():
     try:
         data = conn.read(worksheet="Sheet1", ttl=0)
-        # Säkerställ kolumner
-        for col in ["Enhetsfoto", "Modell", "Tillverkare", "Typ", "Färg", "Resurstagg", "Streckkod", "Status", "Aktuell ägare", "Utlåningsdatum", "Senast inventerad"]:
+        cols = ["Enhetsfoto", "Modell", "Tillverkare", "Typ", "Färg", "Resurstagg", "Streckkod", "Status", "Aktuell ägare", "Utlåningsdatum", "Senast inventerad"]
+        for col in cols:
             if col not in data.columns: data[col] = ""
         data["Resurstagg"] = data["Resurstagg"].apply(clean_id)
         return data.fillna("")
@@ -90,15 +93,13 @@ def save_data(df):
 # --- LOGIN ---
 st.sidebar.title("🎸 Musik-IT Birka")
 pwd = st.sidebar.text_input("Lösenord för Admin/Edit", type="password")
-if pwd == "Birka":
-    st.session_state.authenticated = True
-else:
-    st.session_state.authenticated = False
-    if pwd != "": st.sidebar.error("Fel lösenord")
+st.session_state.authenticated = (pwd == "Birka")
+if pwd != "" and not st.session_state.authenticated:
+    st.sidebar.error("Fel lösenord")
 
 menu = st.sidebar.selectbox("Meny", ["🔍 Sök & Låna", "🔄 Återlämning", "➕ Registrera Nytt", "⚙️ Admin"])
 
-# --- VARUKORG ---
+# --- VARUKORG & PACKLISTA ---
 if st.session_state.cart:
     st.sidebar.subheader("🛒 Varukorg")
     for i in st.session_state.cart: st.sidebar.caption(f"• {i['Modell']}")
@@ -113,8 +114,11 @@ if st.session_state.cart:
         st.rerun()
 
 if st.session_state.last_checkout:
-    with st.sidebar.expander("📄 Senaste packlista", expanded=True):
-        st.components.v1.html(get_packing_list_html(st.session_state.last_checkout['borrower'], st.session_state.last_checkout['items']), height=300)
+    st.sidebar.success(f"Lån registrerat till {st.session_state.last_checkout['borrower']}")
+    # SKAPAR EN DIREKTLÄNK FÖR UTSKRIFT SOM ÖPPNAS I NY FLIK
+    b64_html = base64.b64encode(get_packing_list_printable(st.session_state.last_checkout['borrower'], st.session_state.last_checkout['items']).encode()).decode()
+    href = f'<a href="data:text/html;base64,{b64_html}" target="_blank" style="text-decoration: none;"><button style="width: 100%; padding: 10px; background-color: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer;">🖨️ SKRIV UT PACKLISTA</button></a>'
+    st.sidebar.markdown(href, unsafe_allow_html=True)
 
 # --- VY: SÖK & LÅNA ---
 if menu == "🔍 Sök & Låna":
@@ -122,9 +126,11 @@ if menu == "🔍 Sök & Låna":
     scanned_qr = st.query_params.get("qr", "")
     
     with st.expander("📷 Starta QR-skanner", expanded=not bool(scanned_qr)):
+        # OPTIMERAD SKANNER FÖR PIXEL 8 OCH ANDROID
         qr_js = """
-        <div style="display: flex; justify-content: center;">
-            <div id="reader" style="width: 100%; max-width: 400px; border: 2px solid #ccc;"></div>
+        <div style="display: flex; justify-content: center; flex-direction: column; align-items: center;">
+            <div id="reader" style="width: 100%; max-width: 400px; border: 2px solid #ccc; border-radius: 8px;"></div>
+            <p id="status-msg" style="font-family: sans-serif; margin-top: 10px; color: #666;">Söker kamera...</p>
         </div>
         <script src="https://unpkg.com/html5-qrcode"></script>
         <script>
@@ -133,15 +139,34 @@ if menu == "🔍 Sök & Låna":
                 url.searchParams.set('qr', decodedText);
                 window.top.location.href = url.href;
             }
+            
+            // Försök starta kameran med specifika Android-inställningar
             let html5QrCode = new Html5Qrcode("reader");
-            html5QrCode.start({ facingMode: "environment" }, { fps: 15, qrbox: 250 }, onScanSuccess);
+            const config = { 
+                fps: 20, 
+                qrbox: {width: 250, height: 250},
+                aspectRatio: 1.0
+            };
+
+            html5QrCode.start(
+                { facingMode: "environment" }, 
+                config, 
+                onScanSuccess
+            ).then(() => {
+                document.getElementById("status-msg").innerText = "Siktar på QR-kod...";
+            }).catch(err => {
+                document.getElementById("status-msg").innerText = "Kamerafel: " + err;
+            });
         </script>"""
-        st.components.v1.html(qr_js, height=420)
+        st.components.v1.html(qr_js, height=480)
 
     query = st.text_input("Sök produkt eller ID", value=scanned_qr)
+    if scanned_qr and st.button("Rensa sökning"):
+        st.query_params.clear()
+        st.rerun()
+
     results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)] if query else st.session_state.df
 
-    # Edit-formulär (Visas endast om inloggad)
     if st.session_state.editing_item is not None and st.session_state.authenticated:
         idx = st.session_state.editing_item
         item = st.session_state.df.iloc[idx]
@@ -178,7 +203,7 @@ if menu == "🔍 Sök & Låna":
                 if str(row['Enhetsfoto']).startswith("data"): st.image(row['Enhetsfoto'], width=100)
             with c2:
                 st.markdown(f"### {row['Modell']}")
-                st.caption(f"ID: {row['Resurstagg']} | Typ: {row['Typ']} | Status: {row['Status']}")
+                st.caption(f"ID: {row['Resurstagg']} | Status: {row['Status']}")
             with c3:
                 if row['Status'] == 'Tillgänglig':
                     if st.button("🛒 Låna", key=f"l_{idx}"):
