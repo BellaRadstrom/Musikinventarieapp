@@ -123,9 +123,8 @@ if st.session_state.last_checkout:
 if menu == "🔍 Sök & Låna":
     st.header("Sök & Låna")
     
-    # VIKTIGT: Hämta värdet direkt från URL-parametrar
-    url_params = st.query_params
-    scanned_qr = url_params.get("qr", "")
+    # Hantera QR-kod via query params
+    scanned_qr = st.query_params.get("qr", "")
     
     with st.expander("📷 Starta QR-skanner", expanded=not bool(scanned_qr)):
         qr_js = """
@@ -138,21 +137,23 @@ if menu == "🔍 Sök & Låna":
             let html5QrCode = new Html5Qrcode("reader");
             
             function onScanSuccess(decodedText) {
-                document.getElementById("scan-feedback").innerText = "HITTAD: " + decodedText + ". Laddar om...";
-                document.getElementById("scan-feedback").style.color = "#4CAF50";
-                
-                // Använd top.location för att bryta oss ur iframe och tvinga Streamlit att se parametern
-                setTimeout(() => {
+                // Sluta skanna omedelbart
+                html5QrCode.stop().then(() => {
+                    document.getElementById("scan-feedback").innerText = "HITTAD: " + decodedText;
+                    
+                    // Skapa en URL med sökparametern
                     const url = new URL(window.top.location.href);
                     url.searchParams.set('qr', decodedText);
-                    window.top.location.href = url.href;
-                }, 300);
-                
-                html5QrCode.stop();
+                    
+                    // Navigera med en ren URL-ändring som Streamlit kan fånga upp
+                    window.top.location.search = "qr=" + encodeURIComponent(decodedText);
+                }).catch(err => {
+                     window.top.location.search = "qr=" + encodeURIComponent(decodedText);
+                });
             }
             
             const config = { 
-                fps: 20, 
+                fps: 15, 
                 qrbox: {width: 250, height: 250},
                 aspectRatio: 1.0
             };
@@ -164,12 +165,13 @@ if menu == "🔍 Sök & Låna":
         </script>"""
         st.components.v1.html(qr_js, height=450)
 
-    # Använd värdet från URL i sökfältet
-    query = st.text_input("Sök produkt eller ID", value=scanned_qr)
+    # Sökfältet - vi använder en unik key och fyller i scanned_qr om det finns
+    query = st.text_input("Sök produkt eller ID", value=scanned_qr, key="main_search")
     
-    if scanned_qr and st.button("Rensa sökning"):
-        st.query_params.clear()
-        st.rerun()
+    if scanned_qr:
+        if st.button("Rensa skanning"):
+            st.query_params.clear()
+            st.rerun()
 
     results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)] if query else st.session_state.df
 
