@@ -15,7 +15,7 @@ if 'cart' not in st.session_state: st.session_state.cart = []
 if 'editing_item' not in st.session_state: st.session_state.editing_item = None
 if 'last_checkout' not in st.session_state: st.session_state.last_checkout = None
 if 'authenticated' not in st.session_state: st.session_state.authenticated = False
-if 'debug_logs' not in st.session_state: st.session_state.debug_logs = []
+if 'scanned_code' not in st.session_state: st.session_state.scanned_code = ""
 
 # --- HJÄLPFUNKTIONER ---
 def clean_id(val):
@@ -82,14 +82,13 @@ st.session_state.authenticated = (pwd == "Birka")
 
 menu = st.sidebar.selectbox("Meny", ["🔍 Sök & Låna", "🔄 Återlämning", "➕ Registrera Nytt", "⚙️ Admin"])
 
-# --- VARUKORG & PACKLISTA ---
+# --- VARUKORG ---
 if st.session_state.cart:
     st.sidebar.subheader("🛒 Varukorg")
     for i in st.session_state.cart: st.sidebar.caption(f"• {i['Modell']}")
     borrower = st.sidebar.text_input("Vem lånar?")
     if st.sidebar.button("Slutför utlån") and borrower:
         today = datetime.now().strftime("%Y-%m-%d")
-        st.session_state.last_checkout = {"borrower": borrower, "items": list(st.session_state.cart)}
         for item in st.session_state.cart:
             st.session_state.df.loc[st.session_state.df['Resurstagg'] == item['Resurstagg'], ['Status', 'Aktuell ägare', 'Utlåningsdatum']] = ['Utlånad', borrower, today]
         save_data(st.session_state.df)
@@ -100,62 +99,41 @@ if st.session_state.cart:
 if menu == "🔍 Sök & Låna":
     st.header("Sök & Låna")
     
-    # Hämta värde från URL eller LocalStorage via JS
-    scanned_qr = st.query_params.get("qr", "")
-    
-    with st.expander("📷 Starta QR-skanner", expanded=not bool(scanned_qr)):
-        qr_js = """
-        <div style="display: flex; justify-content: center; flex-direction: column; align-items: center;">
-            <div id="reader" style="width: 100%; max-width: 400px; border: 2px solid #ccc; border-radius: 8px; overflow: hidden; background: #000;"></div>
-            <p id="scan-feedback" style="color: #666; font-family: sans-serif; margin-top: 10px; font-weight: bold;">Kameran är aktiv...</p>
-        </div>
+    # Skanner-logik som använder en dold HTML-input för att trigga Streamlit
+    with st.expander("📷 Starta QR-skanner", expanded=True):
+        qr_component_js = f"""
+        <div id="reader" style="width: 100%; max-width: 400px; margin: auto; border: 2px solid #ccc; border-radius: 10px; overflow: hidden;"></div>
+        <p id="feedback" style="text-align: center; font-family: sans-serif; font-weight: bold; color: #666; margin-top: 10px;">Siktar...</p>
+        
         <script src="https://unpkg.com/html5-qrcode"></script>
         <script>
-            if(!window.html5QrCode) {
-                window.html5QrCode = new Html5Qrcode("reader");
-            }
+            function onScanSuccess(decodedText) {{
+                document.getElementById('feedback').innerText = "TRÄFF: " + decodedText;
+                document.getElementById('feedback').style.color = "#4CAF50";
+                
+                // Denna rad pratar direkt med Streamlits inbyggda meddelandesystem
+                const event = new CustomEvent("QR_SCANNED", {{ detail: decodedText }});
+                window.parent.document.dispatchEvent(event);
+                
+                // Fallback: Ändra URL om eventet blockeras
+                const url = new URL(window.parent.location.href);
+                url.searchParams.set('qr_code', decodedText);
+                window.parent.location.href = url.href;
+            }}
             
-            function onScanSuccess(decodedText) {
-                document.getElementById("scan-feedback").innerText = "KOD DETEKTERAD: " + decodedText;
-                document.getElementById("scan-feedback").style.color = "#4CAF50";
-                
-                // 1. Spara i LocalStorage (fallback)
-                localStorage.setItem('last_qr', decodedText);
-                
-                // 2. Försök navigera URL (huvudmetod)
-                const url = new URL(window.top.location.href);
-                url.searchParams.set('qr', decodedText);
-                window.top.location.href = url.href;
-                
-                window.html5QrCode.stop();
-            }
-            
-            const config = { fps: 10, qrbox: {width: 250, height: 250}, aspectRatio: 1.0 };
-            window.html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess)
-            .catch(err => { document.getElementById("scan-feedback").innerText = "Kamerafel: " + err; });
+            const html5QrCode = new Html5Qrcode("reader");
+            const config = {{ fps: 10, qrbox: {{width: 250, height: 250}}, aspectRatio: 1.0 }};
+            html5QrCode.start({{ facingMode: "environment" }}, config, onScanSuccess);
         </script>
         """
-        st.components.v1.html(qr_js, height=450)
+        st.components.v1.html(qr_component_js, height=480)
 
-    # En osynlig komponent som kollar LocalStorage och uppdaterar Streamlit om URL-metoden misslyckas
-    storage_check_js = """
-    <script>
-        const lastQr = localStorage.getItem('last_qr');
-        if (lastQr) {
-            localStorage.removeItem('last_qr');
-            const url = new URL(window.top.location.href);
-            if (url.searchParams.get('qr') !== lastQr) {
-                url.searchParams.set('qr', lastQr);
-                window.top.location.href = url.href;
-            }
-        }
-    </script>
-    """
-    st.components.v1.html(storage_check_js, height=0)
-
-    query = st.text_input("Sök produkt eller ID", value=scanned_qr)
+    # Fånga upp koden från URL (fungerar som den mest stabila bryggan på mobiler)
+    url_code = st.query_params.get("qr_code", "")
     
-    if scanned_qr and st.button("Rensa sökning"):
+    query = st.text_input("Sök produkt eller ID", value=url_code, key="search_field")
+    
+    if url_code and st.button("Rensa skanning"):
         st.query_params.clear()
         st.rerun()
 
@@ -173,6 +151,10 @@ if menu == "🔍 Sök & Låna":
                 if row['Status'] == 'Tillgänglig':
                     if st.button("🛒 Låna", key=f"l_{idx}"):
                         st.session_state.cart.append(row.to_dict())
+                        st.rerun()
+                if st.session_state.authenticated:
+                    if st.button("✏️ Edit", key=f"e_{idx}"):
+                        st.session_state.editing_item = idx
                         st.rerun()
 
 # --- VY: ÅTERLÄMNING ---
@@ -208,12 +190,15 @@ elif menu == "➕ Registrera Nytt":
 elif menu == "⚙️ Admin":
     if not st.session_state.authenticated: st.warning("Logga in.")
     else:
-        tab1, tab2 = st.tabs(["📊 Lager", "🐞 Debug"])
+        tab1, tab2, tab3 = st.tabs(["📊 Lager", "🏷️ Bulk QR", "📋 Inventering"])
         with tab1:
             st.dataframe(st.session_state.df.drop(columns=["Enhetsfoto"]))
         with tab2:
-            st.subheader("Systemlogg")
-            if st.button("Rensa Logg"): st.session_state.debug_logs = []
-            for log in st.session_state.debug_logs:
-                st.text(log)
-            st.write("Senaste skanning via URL:", st.query_params.get("qr", "Ingen"))
+            st.subheader(" Bulk-utskrift av QR")
+            sel = st.multiselect("Välj produkter:", st.session_state.df['Modell'].tolist())
+            if sel:
+                to_p = st.session_state.df[st.session_state.df['Modell'].isin(sel)].to_dict('records')
+                st.components.v1.html(get_label_html(to_p), height=500, scrolling=True)
+        with tab3:
+            st.write("Senast inventerad lista")
+            st.write(st.session_state.df[['Modell', 'Resurstagg', 'Senast inventerad']])
