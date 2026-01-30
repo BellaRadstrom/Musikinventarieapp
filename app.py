@@ -50,35 +50,6 @@ def generate_qr(data):
     img.save(buf, format="PNG")
     return buf.getvalue()
 
-def get_label_html(items):
-    html = "<div style='display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-start;'>"
-    for item in items:
-        qr_b64 = base64.b64encode(generate_qr(item['Resurstagg'])).decode()
-        html += f"""
-        <div style="width: 3.8cm; height: 2.8cm; border: 1px solid #000; padding: 5px; text-align: center; font-family: Arial, sans-serif; background-color: white; color: black; margin-bottom: 5px;">
-            <img src="data:image/png;base64,{qr_b64}" style="width: 1.6cm;"><br>
-            <div style="font-size: 11px; font-weight: bold; margin-top: 2px;">{str(item['Modell'])[:22]}</div>
-            <div style="font-size: 9px;">ID/SN: {item['Resurstagg']}</div>
-        </div>
-        """
-    html += "</div><div style='text-align:center; margin-top:10px;'><button onclick='window.print()'>Skriv ut etiketter</button></div>"
-    return html
-
-def get_packing_list_html(borrower, items):
-    date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    list_items = "".join([f"<li style='padding:5px 0;'><b>{item['Modell']}</b><br><small>SN/ID: {item['Resurstagg']}</small></li>" for item in items])
-    return f"""
-    <div style="font-family: Arial, sans-serif; padding: 30px; border: 2px solid #333; background: white; color: black; max-width: 600px; margin: auto;">
-        <h1>🎸 Utlåningskvitto</h1>
-        <p><b>Låntagare:</b> {borrower}</p>
-        <p><b>Datum:</b> {date_str}</p>
-        <hr>
-        <h3>Utrustning:</h3>
-        <ul>{list_items}</ul>
-        <button onclick="window.print()">🖨️ Skriv ut</button>
-    </div>
-    """
-
 # --- ANSLUTNING ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
@@ -118,7 +89,6 @@ if st.session_state.cart:
     borrower_name = st.sidebar.text_input("Vem lånar? *")
     if borrower_name and st.sidebar.button("Bekräfta utlån ✅", type="primary"):
         today = datetime.now().strftime("%Y-%m-%d")
-        st.session_state.last_checkout = {"borrower": borrower_name, "items": list(st.session_state.cart)}
         for item in st.session_state.cart:
             st.session_state.df.loc[st.session_state.df['Resurstagg'] == item['Resurstagg'], ['Status', 'Aktuell ägare', 'Utlåningsdatum']] = ['Utlånad', borrower_name, today]
         if save_data(st.session_state.df):
@@ -132,78 +102,70 @@ if menu == "🔍 Sök & Låna":
     q_params = st.query_params
     scanned_val = q_params.get("qr", "")
     
-    with st.expander("📷 Starta QR-skanning", expanded=True):
-        # OPTIMERAD SKANNER FÖR MOBIL
+    with st.expander("📷 Öppna QR-skanner", expanded=True):
+        # Optimerad för Android (Pixel 8 Pro)
         qr_component = f"""
-        <div id="reader" style="width: 100%; max-width: 400px; margin: auto; border-radius: 10px; overflow: hidden;"></div>
+        <div id="reader" style="width: 100%; max-width: 450px; margin: auto; border: 2px solid #4CAF50; border-radius: 8px;"></div>
         <script src="https://unpkg.com/html5-qrcode"></script>
         <script>
             function onScanSuccess(decodedText, decodedResult) {{
                 const url = new URL(window.top.location.href);
                 url.searchParams.set('qr', decodedText);
                 window.top.location.href = url.href;
-                html5QrCode.stop(); // Stoppa kameran direkt vid träff
             }}
 
-            const html5QrCode = new Html5Qrcode("reader");
+            // Specifika inställningar för Android-kameror
             const config = {{ 
-                fps: 15, 
+                fps: 20, 
                 qrbox: {{ width: 250, height: 250 }},
-                aspectRatio: 1.0 
+                aspectRatio: 1.0,
+                videoConstraints: {{
+                    facingMode: "environment",
+                    width: {{ min: 640, ideal: 1280, max: 1920 }},
+                    height: {{ min: 480, ideal: 720, max: 1080 }},
+                    frameRate: {{ ideal: 30, max: 60 }}
+                }}
             }};
 
-            // Tvinga användning av bakre kamera (environment)
-            html5QrCode.start(
-                {{ facingMode: "environment" }}, 
-                config, 
-                onScanSuccess
-            ).catch((err) => {{
-                console.error("Kamerafel:", err);
-            }});
+            const html5QrCode = new Html5Qrcode("reader");
+            html5QrCode.start({{ facingMode: "environment" }}, config, onScanSuccess)
+                .catch(err => console.error("Kamerafel:", err));
         </script>
         """
-        st.components.v1.html(qr_component, height=450)
-        st.caption("Rikta kameran mot QR-koden. Sidan laddas om vid träff.")
-
-    query = st.text_input("Sök eller skanna", value=scanned_val, placeholder="Skriv här...")
+        st.components.v1.html(qr_component, height=500)
+    
+    query = st.text_input("Sök produkt eller skanna QR", value=scanned_val)
     
     if scanned_val and st.button("Rensa sökning"):
         st.query_params.clear()
         st.rerun()
 
-    if query:
-        results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)]
-    else:
-        results = st.session_state.df
+    results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)] if query else st.session_state.df
 
-    # Redigeringsläge
+    # Redigerings-logik (behållen)
     if st.session_state.editing_item is not None:
         idx = st.session_state.editing_item
         item = st.session_state.df.iloc[idx]
-        with st.container(border=True):
-            st.subheader(f"✏️ Redigerar: {item['Modell']}")
-            with st.form("edit_form"):
-                u_mod = st.text_input("Modell", value=item['Modell'])
-                u_sn = st.text_input("ID/SN", value=item['Resurstagg'])
-                u_stat = st.selectbox("Status", ["Tillgänglig", "Utlånad", "Service"], index=0)
-                if st.form_submit_button("Spara"):
-                    st.session_state.df.at[idx, 'Modell'] = u_mod
-                    st.session_state.df.at[idx, 'Resurstagg'] = clean_id(u_sn)
-                    st.session_state.df.at[idx, 'Status'] = u_stat
-                    if save_data(st.session_state.df):
-                        st.session_state.editing_item = None
-                        st.rerun()
-            if st.button("Avbryt"):
+        with st.form("edit_form"):
+            u_mod = st.text_input("Modell", value=item['Modell'])
+            u_sn = st.text_input("ID", value=item['Resurstagg'])
+            if st.form_submit_button("Spara"):
+                st.session_state.df.at[idx, 'Modell'] = u_mod
+                st.session_state.df.at[idx, 'Resurstagg'] = clean_id(u_sn)
+                save_data(st.session_state.df)
                 st.session_state.editing_item = None
                 st.rerun()
+        if st.button("Avbryt"):
+            st.session_state.editing_item = None
+            st.rerun()
 
     for idx, row in results.iterrows():
         with st.container(border=True):
             c1, c2, c3 = st.columns([1, 3, 1])
             with c1:
-                if str(row['Enhetsfoto']).startswith("data:image"): st.image(row['Enhetsfoto'], width=80)
+                if str(row['Enhetsfoto']).startswith("data"): st.image(row['Enhetsfoto'], width=80)
             with c2:
-                st.markdown(f"**{row['Modell']}**")
+                st.write(f"**{row['Modell']}**")
                 st.caption(f"ID: {row['Resurstagg']} | Status: {row['Status']}")
             with c3:
                 if row['Status'] == 'Tillgänglig':
@@ -214,33 +176,29 @@ if menu == "🔍 Sök & Låna":
                     st.session_state.editing_item = idx
                     st.rerun()
 
-# --- ÖVRIGA VYER (Behållna enligt instruktion) ---
+# --- ÖVRIGA VYER ---
 elif menu == "➕ Registrera Nytt":
     st.header("Ny produkt")
-    with st.form("new_reg"):
-        m_in = st.text_input("Modell *")
-        sn_in = st.text_input("Serienummer / ID *", value=st.session_state.temp_sn)
-        foto_in = st.camera_input("Produktfoto")
+    with st.form("new_item"):
+        m = st.text_input("Modell")
+        s = st.text_input("ID")
+        img = st.camera_input("Foto")
         if st.form_submit_button("Spara"):
-            if m_in and sn_in:
-                new_row = {
-                    "Enhetsfoto": process_image_to_base64(foto_in) if foto_in else "",
-                    "Modell": m_in, "Resurstagg": clean_id(sn_in), "Status": "Tillgänglig"
-                }
-                st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_row])], ignore_index=True)
-                save_data(st.session_state.df)
-                st.success("Sparad!")
+            new_row = {"Modell": m, "Resurstagg": clean_id(s), "Status": "Tillgänglig", "Enhetsfoto": process_image_to_base64(img) if img else ""}
+            st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_row])], ignore_index=True)
+            save_data(st.session_state.df)
+            st.success("Klar!")
 
 elif menu == "🔄 Återlämning":
     st.header("Återlämning")
     active_b = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']['Aktuell ägare'].unique()
     if len(active_b) > 0:
-        target = st.selectbox("Välj person:", list(active_b))
-        if st.button("Återlämna allt"):
+        target = st.selectbox("Välj person", active_b)
+        if st.button("Återlämna allt från denna person"):
             st.session_state.df.loc[st.session_state.df['Aktuell ägare'] == target, ['Status', 'Aktuell ägare']] = ['Tillgänglig', '']
             save_data(st.session_state.df)
             st.rerun()
 
 elif menu == "⚙️ Admin & Inventering":
-    st.header("Admin")
+    st.header("Lagerlista")
     st.dataframe(st.session_state.df.drop(columns=["Enhetsfoto"]), use_container_width=True)
