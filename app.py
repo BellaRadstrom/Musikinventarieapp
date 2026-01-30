@@ -139,20 +139,22 @@ if menu == "🔍 Sök & Låna":
     col_search, col_qr = st.columns([3, 1])
     
     with col_qr:
-        if st.button("📷 Skanna QR med kamera"):
+        if st.button("📷 Skanna QR"):
+            # Startar kameran för QR-skanning
             qr_code = streamlit_qr_scanner(key='qr_scanner')
             if qr_code:
                 st.session_state.qr_search_value = qr_code
                 st.rerun()
 
     with col_search:
+        # Om vi har skannat något hamnar det här, annars kan man skriva manuellt
         query = st.text_input("Sök produkt eller ID", value=st.session_state.qr_search_value, placeholder="Skriv eller skanna...")
         if query != st.session_state.qr_search_value:
             st.session_state.qr_search_value = query
 
     results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(st.session_state.qr_search_value, case=False)).any(axis=1)] if st.session_state.qr_search_value else st.session_state.df
 
-    # Redigeringsläge (Samma som tidigare)
+    # Redigeringsläge
     if st.session_state.editing_item is not None:
         idx = st.session_state.editing_item
         item = st.session_state.df.iloc[idx]
