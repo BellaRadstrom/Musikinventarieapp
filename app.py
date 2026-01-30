@@ -18,6 +18,7 @@ if 'cart' not in st.session_state: st.session_state.cart = []
 if 'inv_scanned' not in st.session_state: st.session_state.inv_scanned = []
 if 'last_checkout' not in st.session_state: st.session_state.last_checkout = None
 if 'temp_sn' not in st.session_state: st.session_state.temp_sn = ""
+if 'qr_scan_result' not in st.session_state: st.session_state.qr_scan_result = ""
 
 def add_log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -135,11 +136,31 @@ if st.session_state.last_checkout:
 if menu == "🔍 Sök & Låna":
     st.header("Sök & Låna")
     
-    # QR-SÖK LOGIK: Söker brett men inkluderar Resurstagg
-    query = st.text_input("Skanna QR eller sök produkt...", placeholder="Skanna eller skriv här...")
+    # Webb-baserad QR-skanner (JavaScript)
+    with st.expander("📷 Öppna QR-skanner"):
+        st.markdown("""
+        <div id="reader" style="width: 100%;"></div>
+        <script src="https://unpkg.com/html5-qrcode"></script>
+        <script>
+            function onScanSuccess(decodedText, decodedResult) {
+                // Skicka resultatet till Streamlit genom att skapa en länk eller ändra URL
+                window.parent.postMessage({
+                    type: 'streamlit:set_widget_value',
+                    data: {id: 'qr_input_field', value: decodedText}
+                }, '*');
+                // Stoppa skannern efter lyckad läsning
+                html5QrcodeScanner.clear();
+            }
+            let html5QrcodeScanner = new Html5QrcodeScanner(
+                "reader", { fps: 10, qrbox: 250 });
+            html5QrcodeScanner.render(onScanSuccess);
+        </script>
+        """, unsafe_allow_html=True)
+
+    # Sökfält (här hamnar skannat värde)
+    query = st.text_input("Sök produkt eller skanna QR...", key="qr_input_field", placeholder="Skriv här eller skanna ovan...")
     
     if query:
-        # Söker i alla kolumner
         results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)]
     else:
         results = st.session_state.df
@@ -168,7 +189,6 @@ if menu == "🔍 Sök & Låna":
                 new_img = st.camera_input("Ändra foto")
                 
                 if st.form_submit_button("Spara alla ändringar"):
-                    # Om ID ändras måste vi uppdatera båda fälten
                     st.session_state.df.at[idx, 'Modell'] = u_mod
                     st.session_state.df.at[idx, 'Tillverkare'] = u_tverk
                     st.session_state.df.at[idx, 'Typ'] = u_typ
