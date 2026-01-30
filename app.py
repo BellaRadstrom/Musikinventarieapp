@@ -98,13 +98,12 @@ if st.session_state.cart:
 
 if st.session_state.last_checkout:
     st.sidebar.success(f"Lån klart till {st.session_state.last_checkout['borrower']}")
-    # Ny robust utskriftsmetod
     list_items_html = "".join([f"<li>{i['Modell']} ({i['Resurstagg']})</li>" for i in st.session_state.last_checkout['items']])
     print_js = f"""
     <script>
     function printList() {{
-        var win = window.open('', '', 'height=700,width=700');
-        win.document.write('<html><body style="font-family:sans-serif; padding:50px;">');
+        var win = window.open('', '_blank', 'height=700,width=700');
+        win.document.write('<html><head><title>Packlista</title></head><body style="font-family:sans-serif; padding:50px;">');
         win.document.write('<h1>Packlista - Birka Musik-IT</h1>');
         win.document.write('<p><b>Låntagare:</b> {st.session_state.last_checkout['borrower']}</p>');
         win.document.write('<p><b>Datum:</b> {datetime.now().strftime("%Y-%m-%d")}</p><hr><ul>');
@@ -112,12 +111,13 @@ if st.session_state.last_checkout:
         win.document.write('</ul><hr><p>Tack!</p>');
         win.document.write('</body></html>');
         win.document.close();
-        win.print();
+        setTimeout(function() {{ win.print(); }}, 500);
     }}
     </script>
-    <button onclick="printList()" style="width:100%; padding:10px; background:#4CAF50; color:white; border:none; border-radius:5px; cursor:pointer;">🖨️ SKRIV UT PACKLISTA</button>
+    <button onclick="printList()" style="width:100%; padding:10px; background:#4CAF50; color:white; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">🖨️ SKRIV UT PACKLISTA</button>
     """
-    st.sidebar.components.v1.html(print_js, height=50)
+    with st.sidebar:
+        st.components.v1.html(print_js, height=60)
 
 # --- VY: SÖK & LÅNA ---
 if menu == "🔍 Sök & Låna":
@@ -127,7 +127,7 @@ if menu == "🔍 Sök & Låna":
     with st.expander("📷 Starta QR-skanner", expanded=not bool(scanned_qr)):
         qr_js = """
         <div style="display: flex; justify-content: center; flex-direction: column; align-items: center;">
-            <div id="reader" style="width: 100%; max-width: 400px; border: 2px solid #ccc; border-radius: 8px;"></div>
+            <div id="reader" style="width: 100%; max-width: 400px; border: 2px solid #ccc; border-radius: 8px; overflow: hidden;"></div>
         </div>
         <script src="https://unpkg.com/html5-qrcode"></script>
         <script>
@@ -137,11 +137,18 @@ if menu == "🔍 Sök & Låna":
                 window.top.location.href = url.href;
             }
             let html5QrCode = new Html5Qrcode("reader");
-            html5QrCode.start(
-                { facingMode: "environment" }, 
-                { fps: 20, qrbox: {width: 250, height: 250}, videoConstraints: { focusMode: "continuous" } },
-                onScanSuccess
-            );
+            const config = { 
+                fps: 25, 
+                qrbox: {width: 280, height: 280},
+                videoConstraints: { 
+                    facingMode: "environment",
+                    focusMode: "continuous",
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                } 
+            };
+            html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess)
+            .catch(err => console.error("Kamerafel", err));
         </script>"""
         st.components.v1.html(qr_js, height=450)
 
@@ -221,7 +228,7 @@ elif menu == "🔄 Återlämning":
             for tag in selected_tags:
                 st.session_state.df.loc[st.session_state.df['Resurstagg'] == tag, ['Status', 'Aktuell ägare', 'Utlåningsdatum', 'Senast inventerad']] = ['Tillgänglig', '', '', now]
             save_data(st.session_state.df)
-            st.success("Produkter återställda och inventerade!")
+            st.success("Produkter återställda!")
             st.rerun()
     else: st.info("Inga aktiva utlån.")
 
