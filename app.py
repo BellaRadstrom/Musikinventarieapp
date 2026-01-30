@@ -10,15 +10,11 @@ import base64
 # --- CONFIG ---
 st.set_page_config(page_title="Musik-IT Birka", layout="wide", page_icon="🎸")
 
-# --- SESSION STATE INITIALISERING ---
-if 'df' not in st.session_state:
-    st.session_state.df = pd.DataFrame()
-if 'cart' not in st.session_state:
-    st.session_state.cart = []
-if 'authenticated' not in st.session_state:
-    st.session_state.authenticated = False
-if 'debug_logs' not in st.session_state:
-    st.session_state.debug_logs = []
+# --- SESSION STATE ---
+if 'df' not in st.session_state: st.session_state.df = None
+if 'cart' not in st.session_state: st.session_state.cart = []
+if 'authenticated' not in st.session_state: st.session_state.authenticated = False
+if 'debug_logs' not in st.session_state: st.session_state.debug_logs = []
 
 # --- HJÄLPFUNKTIONER ---
 def add_log(msg):
@@ -65,140 +61,153 @@ def get_label_html(items):
     html += "</div><br><button onclick='window.print()'>Skriv ut etiketter</button>"
     return html
 
-# --- DATALADDNING (OPTIMERAD) ---
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-def force_load():
+# --- DATALADDNING ---
+def load_data_from_gsheets():
     try:
-        # Hämta data utan cache för att bryta "tuggandet"
-        data = conn.read(worksheet="Sheet1", ttl=0)
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        # Vi läser utan extra parametrar för att minimera hängningar
+        data = conn.read(worksheet="Sheet1")
         cols = ["Enhetsfoto", "Modell", "Tillverkare", "Typ", "Färg", "Resurstagg", "Streckkod", "Status", "Aktuell ägare", "Utlåningsdatum", "Senast inventerad"]
         for col in cols:
             if col not in data.columns: data[col] = ""
         data["Resurstagg"] = data["Resurstagg"].apply(clean_id)
         st.session_state.df = data.fillna("")
-        add_log("Data hämtad framgångsrikt.")
+        add_log("Data hämtad från Google Sheets.")
     except Exception as e:
-        add_log(f"Anslutningsfel: {str(e)}")
-
-# Ladda bara om df är tom
-if st.session_state.df.empty:
-    force_load()
+        add_log(f"Laddningsfel: {str(e)}")
+        st.error("Kunde inte hämta data. Kontrollera internetanslutningen.")
 
 def save_data(df):
     try:
+        conn = st.connection("gsheets", type=GSheetsConnection)
         conn.update(worksheet="Sheet1", data=df.fillna("").astype(str))
         st.session_state.df = df
-        add_log("Data sparad.")
+        add_log("Data sparad till Google Sheets.")
     except Exception as e:
         add_log(f"Spara-fel: {str(e)}")
 
-# --- LOGIN ---
+# --- STARTA APPLIKATIONEN ---
 st.sidebar.title("🎸 Musik-IT Birka")
 pwd = st.sidebar.text_input("Lösenord", type="password")
 st.session_state.authenticated = (pwd == "Birka")
 
-menu = st.sidebar.selectbox("Meny", ["🔍 Sök & Låna", "🔄 Återlämning", "➕ Registrera Nytt", "⚙️ Admin"])
+# Försök ladda data om den inte finns
+if st.session_state.df is None:
+    with st.spinner("Ansluter till Google Sheets..."):
+        load_data_from_gsheets()
 
-# --- VY: SÖK & LÅNA ---
-if menu == "🔍 Sök & Låna":
-    st.header("Sök & Låna")
-    
-    with st.expander("📷 Starta QR-skanner", expanded=True):
-        qr_js = """
-        <div id="reader" style="width: 100%; max-width: 400px; margin: auto; border: 2px solid #ccc; border-radius: 10px; overflow: hidden;"></div>
-        <p id="feedback" style="text-align: center; font-weight: bold; color: #666; margin-top: 10px;">Siktar...</p>
-        <script src="https://unpkg.com/html5-qrcode"></script>
-        <script>
-            if(!window.scannerStarted) {
-                const html5QrCode = new Html5Qrcode("reader");
-                html5QrCode.start({ facingMode: "environment" }, 
-                { fps: 10, qrbox: 250 }, 
-                (decodedText) => {
-                    document.getElementById('feedback').innerText = "HITTAD: " + decodedText;
-                    localStorage.setItem('last_qr', decodedText);
-                });
-                window.scannerStarted = true;
-            }
-        </script>
-        """
-        st.components.v1.html(qr_js, height=400)
+if st.session_state.df is not None:
+    menu = st.sidebar.selectbox("Meny", ["🔍 Sök & Låna", "🔄 Återlämning", "➕ Registrera Nytt", "⚙️ Admin"])
 
-    if st.button("📥 HÄMTA SKANNAD KOD", use_container_width=True, type="primary"):
-        js_get = """
-        <script>
-            const code = localStorage.getItem('last_qr');
-            if(code) {
-                const url = new URL(window.location.href);
-                url.searchParams.set('qr', code);
-                window.location.href = url.href;
-            } else { alert("Ingen kod skannad."); }
-        </script>
-        """
-        st.components.v1.html(js_get, height=0)
+    # --- VY: SÖK & LÅNA ---
+    if menu == "🔍 Sök & Låna":
+        st.header("Sök & Låna")
+        
+        with st.expander("📷 Starta QR-skanner", expanded=True):
+            qr_js = """
+            <div id="reader" style="width: 100%; max-width: 400px; margin: auto; border: 2px solid #ccc; border-radius: 10px; overflow: hidden;"></div>
+            <p id="feedback" style="text-align: center; font-weight: bold; color: #666; margin-top: 10px;">Väntar på skanning...</p>
+            <script src="https://unpkg.com/html5-qrcode"></script>
+            <script>
+                if(!window.scannerRunning) {
+                    const html5QrCode = new Html5Qrcode("reader");
+                    html5QrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: 250 }, 
+                    (decodedText) => {
+                        document.getElementById('feedback').innerText = "TRÄFF: " + decodedText;
+                        localStorage.setItem('scanned_code', decodedText);
+                    }).catch(err => { console.log(err); });
+                    window.scannerRunning = true;
+                }
+            </script>
+            """
+            st.components.v1.html(qr_js, height=450)
 
-    url_val = st.query_params.get("qr", "")
-    query = st.text_input("Sök produkt eller ID", value=url_val)
-    
-    if url_val and st.button("Rensa"):
-        st.query_params.clear()
-        st.rerun()
+        if st.button("📥 HÄMTA SKANNAD KOD", use_container_width=True, type="primary"):
+            js_pull = """
+            <script>
+                const code = localStorage.getItem('scanned_code');
+                if(code) {
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('qr', code);
+                    window.location.href = url.href;
+                } else { alert("Ingen kod hittades i telefonens minne."); }
+            </script>
+            """
+            st.components.v1.html(js_pull, height=0)
 
-    results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)] if query else st.session_state.df
+        url_val = st.query_params.get("qr", "")
+        query = st.text_input("Sök produkt eller ID", value=url_val)
+        
+        if url_val and st.button("Rensa sökning"):
+            st.query_params.clear()
+            st.rerun()
 
-    for idx, row in results.iterrows():
-        with st.container(border=True):
-            c1, c2, c3 = st.columns([1, 3, 1])
-            with c1:
-                if str(row['Enhetsfoto']).startswith("data"): st.image(row['Enhetsfoto'], width=100)
-            with c2:
-                st.markdown(f"### {row['Modell']}")
-                st.caption(f"ID: {row['Resurstagg']} | Status: {row['Status']}")
-            with c3:
-                if row['Status'] == 'Tillgänglig' and st.button("🛒 Låna", key=f"l_{idx}"):
-                    st.session_state.cart.append(row.to_dict())
+        results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(query, case=False)).any(axis=1)] if query else st.session_state.df
+
+        for idx, row in results.iterrows():
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([1, 3, 1])
+                with c1:
+                    if str(row['Enhetsfoto']).startswith("data"): st.image(row['Enhetsfoto'], width=100)
+                with c2:
+                    st.markdown(f"### {row['Modell']}")
+                    st.caption(f"ID: {row['Resurstagg']} | Status: {row['Status']}")
+                with c3:
+                    if row['Status'] == 'Tillgänglig':
+                        if st.button("🛒 Låna", key=f"l_{idx}"):
+                            st.session_state.cart.append(row.to_dict())
+                            st.rerun()
+
+    # --- VY: ÅTERLÄMNING ---
+    elif menu == "🔄 Återlämning":
+        st.header("Återlämning")
+        borrowers = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']['Aktuell ägare'].unique()
+        if len(borrowers) > 0:
+            target = st.selectbox("Vem lämnar tillbaka?", borrowers)
+            items = st.session_state.df[st.session_state.df['Aktuell ägare'] == target]
+            for i, row in items.iterrows():
+                if st.button(f"Lämna tillbaka {row['Modell']} ({row['Resurstagg']})", key=f"ret_{i}"):
+                    st.session_state.df.at[i, 'Status'] = 'Tillgänglig'
+                    st.session_state.df.at[i, 'Aktuell ägare'] = ''
+                    save_data(st.session_state.df)
                     st.rerun()
+        else: st.info("Inga aktiva utlån just nu.")
 
-# --- ÖVRIGA VYER (BEHÅLLNA) ---
-elif menu == "🔄 Återlämning":
-    st.header("Återlämning")
-    borrowers = st.session_state.df[st.session_state.df['Status'] == 'Utlånad']['Aktuell ägare'].unique()
-    if len(borrowers) > 0:
-        target = st.selectbox("Vem lämnar tillbaka?", borrowers)
-        items = st.session_state.df[st.session_state.df['Aktuell ägare'] == target]
-        for i, row in items.iterrows():
-            if st.button(f"Lämna tillbaka {row['Modell']}", key=f"ret_{i}"):
-                st.session_state.df.at[i, 'Status'] = 'Tillgänglig'
-                st.session_state.df.at[i, 'Aktuell ägare'] = ''
-                save_data(st.session_state.df)
-                st.rerun()
-    else: st.info("Inga utlån.")
+    # --- VY: REGISTRERA ---
+    elif menu == "➕ Registrera Nytt":
+        if not st.session_state.authenticated: st.warning("Logga in i sidomenyn.")
+        else:
+            with st.form("new"):
+                m = st.text_input("Modell *")
+                i = st.text_input("ID/SN *")
+                f = st.camera_input("Foto")
+                if st.form_submit_button("Spara"):
+                    new_row = {"Modell": m, "Resurstagg": clean_id(i), "Status": "Tillgänglig", "Enhetsfoto": process_image_to_base64(f) if f else ""}
+                    st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_row])], ignore_index=True)
+                    save_data(st.session_state.df)
+                    st.success("Produkten har sparats!")
 
-elif menu == "➕ Registrera Nytt":
-    if not st.session_state.authenticated: st.warning("Logga in.")
-    else:
-        with st.form("new"):
-            m = st.text_input("Modell *")
-            i = st.text_input("ID *")
-            f = st.camera_input("Foto")
-            if st.form_submit_button("Spara"):
-                new_row = {"Modell": m, "Resurstagg": clean_id(i), "Status": "Tillgänglig", "Enhetsfoto": process_image_to_base64(f) if f else ""}
-                st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_row])], ignore_index=True)
-                save_data(st.session_state.df)
-                st.success("Sparad!")
-
-elif menu == "⚙️ Admin":
-    if not st.session_state.authenticated: st.warning("Logga in.")
-    else:
-        t1, t2, t3 = st.tabs(["📊 Lager", "🏷️ Bulk QR", "📋 Logg"])
-        with t1: st.dataframe(st.session_state.df.drop(columns=["Enhetsfoto"]))
-        with t2:
-            sel = st.multiselect("Välj produkter:", st.session_state.df['Modell'].tolist())
-            if sel:
-                to_p = st.session_state.df[st.session_state.df['Modell'].isin(sel)].to_dict('records')
-                st.components.v1.html(get_label_html(to_p), height=500, scrolling=True)
-        with t3:
-            if st.button("Uppdatera från GSheets"): 
-                force_load()
-                st.rerun()
-            for log in st.session_state.debug_logs: st.text(log)
+    # --- VY: ADMIN ---
+    elif menu == "⚙️ Admin":
+        if not st.session_state.authenticated: st.warning("Logga in.")
+        else:
+            tab1, tab2, tab3 = st.tabs(["📊 Lager", "🏷️ Bulk QR", "📋 Systemlogg"])
+            with tab1:
+                st.dataframe(st.session_state.df.drop(columns=["Enhetsfoto"]))
+            with tab2:
+                st.subheader("Bulk-utskrift av QR")
+                sel = st.multiselect("Välj produkter:", st.session_state.df['Modell'].tolist())
+                if sel:
+                    to_p = st.session_state.df[st.session_state.df['Modell'].isin(sel)].to_dict('records')
+                    st.components.v1.html(get_label_html(to_p), height=500, scrolling=True)
+            with tab3:
+                if st.button("Tvinga omladdning från GSheets"):
+                    load_data_from_gsheets()
+                    st.rerun()
+                for log in st.session_state.debug_logs:
+                    st.text(log)
+else:
+    st.warning("Väntar på att få kontakt med databasen...")
+    if st.button("Försök ansluta igen"):
+        load_data_from_gsheets()
+        st.rerun()
