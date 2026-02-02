@@ -11,10 +11,10 @@ import cv2
 import numpy as np
 
 # --- 1. SETUP ---
-st.set_page_config(page_title="Musik-IT Birka v13.3", layout="wide")
+st.set_page_config(page_title="Musik-IT Birka v13.4", layout="wide")
 
-# Session states
-for key in ['cart', 'edit_idx', 'debug_log', 'last_loan', 'search_query']:
+# Session states - 'search_input' är nu den magiska nyckeln för sökfältet
+for key in ['cart', 'edit_idx', 'debug_log', 'last_loan', 'search_input']:
     if key not in st.session_state:
         st.session_state[key] = [] if key in ['cart', 'debug_log'] else ""
 
@@ -32,7 +32,6 @@ def get_data_force():
                 "Streckkod", "Status", "Aktuell ägare", "Utlåningsdatum", "Senast inventerad"]
         for c in cols:
             if c not in df.columns: df[c] = ""
-        add_log(f"Data hämtad: {len(df)} rader.")
         return df.fillna("")
     except Exception as e:
         add_log(f"Fetch Error: {e}")
@@ -74,7 +73,6 @@ def decode_qr(image_file):
         opencv_image = cv2.imdecode(file_bytes, 1)
         detector = cv2.QRCodeDetector()
         data, points, _ = detector.detectAndDecode(opencv_image)
-        # Rensa eventuella osynliga tecken
         return data.strip() if data else ""
     except Exception as e:
         add_log(f"QR Scan Error: {e}")
@@ -119,50 +117,29 @@ if menu == "🔍 Sök & Skanna":
         if cam_image:
             found_id = decode_qr(cam_image)
             if found_id:
-                add_log(f"KAMERA: Hittade koden '{found_id}'")
-                st.session_state.search_query = found_id
-                st.success(f"Identifierade ID: {found_id}")
+                # VIKTIGT: Här tvingar vi in värdet i sökfältets nyckel direkt
+                st.session_state.search_input = found_id
+                add_log(f"KAMERA: Satt search_input till '{found_id}'")
                 st.rerun()
             else:
-                add_log("KAMERA: Bild tagen men ingen kod kunde avkodas.")
-                st.warning("Ingen QR-kod hittades i bilden.")
+                st.warning("Ingen QR-kod hittades.")
 
-    # EDITERING (Säkerhetscheckad)
-    if is_admin and st.session_state.edit_idx is not None:
-        idx = st.session_state.edit_idx
-        if idx in st.session_state.df.index:
-            row = st.session_state.df.loc[idx]
-            with st.container(border=True):
-                st.subheader(f"🛠️ Editera: {row['Modell']}")
-                with st.form("edit_v13"):
-                    c1, c2 = st.columns(2)
-                    e_mod = c1.text_input("Modell", row['Modell'])
-                    e_status = c2.selectbox("Status", ["Tillgänglig", "Service", "Trasig", "Utlånad"], index=0)
-                    e_img_cam = st.camera_input("Uppdatera foto")
-                    if st.form_submit_button("Spara"):
-                        df = get_data_force()
-                        df.loc[idx, ['Modell', 'Status']] = [e_mod, e_status]
-                        if e_img_cam: df.at[idx, 'Enhetsfoto'] = img_to_b64(e_img_cam)
-                        save_to_sheets(df); st.session_state.edit_idx = None; st.rerun()
-                    if st.form_submit_button("Avbryt"): st.session_state.edit_idx = None; st.rerun()
-        else: st.session_state.edit_idx = None
+    # SÖKFÄLT (Kopplat via 'key')
+    q = st.text_input("Sök (Modell, ID, Färg...)", key="search_input")
 
-    # SÖKFÄLT
-    q = st.text_input("Sök (Modell, ID, Färg...)", value=st.session_state.search_query)
-    st.session_state.search_query = q # Synka manuell sökning tillbaka till state
-
-    # FILTRERING & LOGGNING
+    # FILTRERING
     if q:
-        add_log(f"FILTER: Söker efter '{q}'")
-        # Sök i hela dataframe
+        # Säkerställ att vi kollar mot strängar och ignorerar skiftläge
         mask = st.session_state.df.astype(str).apply(lambda x: x.str.contains(q, case=False, na=False)).any(axis=1)
         results = st.session_state.df[mask]
-        add_log(f"FILTER: Hittade {len(results)} matchningar.")
         
-        if results.empty:
-            st.warning(f"Ingen produkt med ID/namn '{q}' hittades i registret.")
-            if st.button("Visa alla produkter igen"):
-                st.session_state.search_query = ""
+        # Logga resultatet för admin
+        if not results.empty:
+            st.info(f"Visar resultat för: {q}")
+        else:
+            st.warning(f"Ingen träff på '{q}'.")
+            if st.button("Rensa sökning"):
+                st.session_state.search_input = ""
                 st.rerun()
     else:
         results = st.session_state.df
@@ -177,6 +154,7 @@ if menu == "🔍 Sök & Skanna":
             with c2:
                 st.subheader(row['Modell'])
                 st.write(f"ID: {row['Resurstagg']} | Status: {row['Status']}")
+                if row['Status'] == 'Utlånad': st.error(f"Låntagare: {row['Aktuell ägare']}")
             with c3:
                 if row['Status'] == 'Tillgänglig':
                     if st.button("🛒 Lägg till", key=f"a{idx}"):
@@ -185,7 +163,7 @@ if menu == "🔍 Sök & Skanna":
                     if st.button("✏️ Edit", key=f"e{idx}"):
                         st.session_state.edit_idx = idx; st.rerun()
 
-# --- 8. NY REGISTRERING ---
+# --- 8, 9, 10 --- (Samma som tidigare stabila version)
 elif menu == "➕ Ny registrering":
     with st.form("new_v12", clear_on_submit=True):
         st.subheader("Lägg till ny utrustning")
@@ -205,7 +183,6 @@ elif menu == "➕ Ny registrering":
                 df = pd.concat([df, pd.DataFrame([new])], ignore_index=True)
                 if save_to_sheets(df): st.rerun()
 
-# --- 9. ÅTERLÄMNING ---
 elif menu == "🔄 Återlämning":
     st.header("Individuell återlämning")
     current_df = get_data_force()
@@ -218,22 +195,21 @@ elif menu == "🔄 Återlämning":
                 with st.container(border=True):
                     c1, c2 = st.columns([3, 1])
                     c1.write(f"**{row['Modell']}** (ID: {row['Resurstagg']})")
-                    if c2.button("✅ Bekräfta återkomst", key=f"ret_{row['Resurstagg']}"):
+                    if c2.button("✅ Bekräfta", key=f"ret_{row['Resurstagg']}"):
                         df_upd = get_data_force()
                         p_idx = df_upd[df_upd['Resurstagg'] == row['Resurstagg']].index
                         df_upd.loc[p_idx, ['Status', 'Aktuell ägare', 'Utlåningsdatum', 'Senast inventerad']] = ['Tillgänglig', '', '', datetime.now().strftime("%Y-%m-%d")]
                         if save_to_sheets(df_upd): st.session_state.df = df_upd; st.rerun()
     else: st.info("Inga utlånade produkter.")
 
-# --- 10. ADMIN & INVENTERING ---
 elif menu == "⚙️ Admin & Inventering":
     if is_admin:
         t1, t2, t3 = st.tabs(["📋 Inventering", "🖨️ Bulk QR", "📜 Logg"])
         with t1:
-            st.subheader(f"Inventering {datetime.now().strftime('%Y-%m-%d')}")
+            st.subheader("Inventeringslista")
             st.dataframe(st.session_state.df[['Modell', 'Resurstagg', 'Status', 'Senast inventerad']])
         with t2:
-            st.write("Bulk QR-generering här.")
+            st.write("Välj produkter för att generera etiketter.")
         with t3:
-            st.write("### Systemlogg (Felsökning)")
+            st.write("### Systemlogg")
             for l in reversed(st.session_state.debug_log): st.text(l)
