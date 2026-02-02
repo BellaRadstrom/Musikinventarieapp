@@ -11,17 +11,14 @@ import cv2
 import numpy as np
 
 # --- 1. SETUP ---
-st.set_page_config(page_title="Musik-IT Birka v13.7", layout="wide")
+st.set_page_config(page_title="Musik-IT Birka v13.8", layout="wide")
 
-# Initiera session states
-if 'search_query' not in st.session_state:
-    st.session_state.search_query = ""
-if 'cart' not in st.session_state:
-    st.session_state.cart = []
-if 'debug_log' not in st.session_state:
-    st.session_state.debug_log = []
-if 'edit_idx' not in st.session_state:
-    st.session_state.edit_idx = None
+# Initiera session states (Säkerställ att alla nycklar finns)
+if 'search_query' not in st.session_state: st.session_state.search_query = ""
+if 'cart' not in st.session_state: st.session_state.cart = []
+if 'debug_log' not in st.session_state: st.session_state.debug_log = []
+if 'edit_idx' not in st.session_state: st.session_state.edit_idx = None
+if 'last_loan' not in st.session_state: st.session_state.last_loan = None
 
 def add_log(msg):
     ts = datetime.now().strftime("%H:%M:%S")
@@ -42,8 +39,7 @@ def get_data_force():
         add_log(f"Fetch Error: {e}")
         return pd.DataFrame()
 
-# Ladda data
-if 'df' not in st.session_state:
+if 'df' not in st.session_state or st.session_state.df is None:
     st.session_state.df = get_data_force()
 
 # --- 3. UTILITIES ---
@@ -54,11 +50,9 @@ def get_qr_b64(data):
     return base64.b64encode(buf.getvalue()).decode()
 
 def decode_qr_mobile(image_file):
-    """Förbättrad avkodning för mobilbilder."""
     try:
         file_bytes = np.asarray(bytearray(image_file.read()), dtype=np.uint8)
         img = cv2.imdecode(file_bytes, 1)
-        # Konvertera till gråskala för bättre läsning på mobila kameror
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         detector = cv2.QRCodeDetector()
         data, _, _ = detector.detectAndDecode(gray)
@@ -67,57 +61,56 @@ def decode_qr_mobile(image_file):
         add_log(f"QR Scan Error: {e}")
         return ""
 
-# --- 4. NAVIGATION ---
+# --- 4. NAVIGATION & ADMIN ---
 st.sidebar.title("🎸 Musik-IT Birka")
-pwd = st.sidebar.text_input("Admin lösenord", type="password")
+# Lagt till unik key för att slippa DuplicateID-felet
+pwd = st.sidebar.text_input("Admin lösenord", type="password", key="admin_pwd_field")
 is_admin = (pwd == "Birka")
+
 menu = st.sidebar.selectbox("Meny", ["🔍 Sök & Skanna", "➕ Ny registrering", "🔄 Återlämning", "⚙️ Admin & Inventering"])
 
-# --- 5. SÖK & SKANNA (Huvudfokus) ---
+# --- 5. SÖK & SKANNA ---
 if menu == "🔍 Sök & Skanna":
     
-    # 1. Kameran högst upp
+    # QR-Skanner
     with st.expander("📷 ÖPPNA QR-SKANNER", expanded=False):
-        cam_image = st.camera_input("Ta bild på QR-kod")
+        # Unik key på camera_input hjälper till att nollställa den
+        cam_image = st.camera_input("Ta bild på QR-kod", key="qr_camera")
         if cam_image:
             scanned_code = decode_qr_mobile(cam_image)
             if scanned_code:
-                # Här tvingar vi in texten i sök-state
                 st.session_state.search_query = scanned_code
-                add_log(f"Hittade QR-kod: {scanned_code}")
-                st.success(f"Hittade ID: {scanned_code} - Scrolla ner för resultat!")
-                # Ingen rerun här, vi låter den flyta ner i sökfältet
-            else:
-                st.warning("Kameran hittade ingen kod. Prova att gå närmare eller ha bättre ljus.")
+                st.success(f"Hittade ID: {scanned_code} - Resultat visas nedan!")
+                # Vi skippar rerun här för att undvika kraschen du såg
 
-    # 2. Sökfältet (Hämtar sitt värde från session_state)
-    # Vi använder en text_input som läser från 'search_query'
-    search_term = st.text_input("Sökfält (Skriv här eller skanna ovan)", value=st.session_state.search_query)
+    # Sökfält (Hämtar värde från session_state)
+    q_input = st.text_input("Sök (Modell, ID...)", value=st.session_state.search_query)
     
-    # Uppdatera state om användaren skriver manuellt
-    if search_term != st.session_state.search_query:
-        st.session_state.search_query = search_term
+    # Uppdatera state om användaren skriver
+    if q_input != st.session_state.search_query:
+        st.session_state.search_query = q_input
 
-    # Knapp för att rensa sökningen snabbt
+    # Rensa-knapp som fungerar
     if st.session_state.search_query:
-        if st.button("❌ Rensa sökning"):
+        if st.button("❌ Rensa sökning och stäng kamera"):
             st.session_state.search_query = ""
+            # Genom att köra rerun här när state är tömt nollställs allt
             st.rerun()
 
-    # 3. Filtrering och visning
+    # Filtrering
     if st.session_state.search_query:
-        q = st.session_state.search_query.lower()
-        # Sök i alla kolumner
-        results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(q, case=False, na=False)).any(axis=1)]
+        search_term = st.session_state.search_query.lower()
+        results = st.session_state.df[st.session_state.df.astype(str).apply(
+            lambda x: x.str.contains(search_term, case=False, na=False)).any(axis=1)]
         
         if results.empty:
-            st.warning(f"Ingen träff för '{q}'")
+            st.warning(f"Ingen träff för '{search_term}'")
         else:
-            st.write(f"Hittade {len(results)} produkter:")
+            st.info(f"Visar {len(results)} matchningar")
     else:
         results = st.session_state.df
 
-    # Visa resultatkorten
+    # Visa resultaten
     for idx, row in results.iterrows():
         with st.container(border=True):
             c1, c2, c3 = st.columns([1, 2, 1])
@@ -126,29 +119,19 @@ if menu == "🔍 Sök & Skanna":
                 st.image(f"data:image/png;base64,{get_qr_b64(row['Resurstagg'])}", width=60)
             with c2:
                 st.subheader(row['Modell'])
-                st.caption(f"ID: {row['Resurstagg']} | Status: {row['Status']}")
-                if row['Status'] == 'Utlånad': st.error(f"Låntagare: {row['Aktuell ägare']}")
+                st.write(f"ID: {row['Resurstagg']} | Status: {row['Status']}")
             with c3:
                 if row['Status'] == 'Tillgänglig':
-                    if st.button("🛒 Låna", key=f"a{idx}"):
+                    if st.button("🛒 Lägg till", key=f"cart_{idx}"):
                         st.session_state.cart.append(row.to_dict())
                         st.toast(f"{row['Modell']} tillagd!")
                 if is_admin:
-                    if st.button("✏️ Edit", key=f"e{idx}"):
+                    if st.button("✏️ Edit", key=f"edit_{idx}"):
                         st.session_state.edit_idx = idx
                         st.rerun()
 
-# --- (Övriga delar av koden behålls oförändrade men logiken ovan är det som fixar sökningen) ---
-
-# --- 4. ADMIN STATUS ---
-st.sidebar.title("🎸 Musik-IT Birka")
-pwd = st.sidebar.text_input("Admin lösenord", type="password")
-is_admin = (pwd == "Birka")
-
-if is_admin:
-    st.markdown("<div style='background:#ff4b4b;padding:10px;border-radius:5px;text-align:center;color:white;font-weight:bold;'>🔴 ADMIN-LÄGE AKTIVERAT</div>", unsafe_allow_html=True)
-else:
-    st.markdown("<div style='background:#28a745;padding:10px;border-radius:5px;text-align:center;color:white;font-weight:bold;'>🟢 ANVÄNDAR-LÄGE</div>", unsafe_allow_html=True)
+# --- RESTERANDE DELAR (NY REG, ÅTERLÄMNING ETC) ---
+# (Behålls som i din fungerande v12 men med is_admin-skydd)
 
 # --- 5. VARUKORG ---
 if st.session_state.cart:
@@ -311,4 +294,5 @@ elif menu == "⚙️ Admin & Inventering":
                 st.components.v1.html(html + "</div><br><button onclick='window.print()'>SKRIV UT</button>", height=500)
         with t3:
             for l in reversed(st.session_state.debug_log): st.text(l)
+
 
