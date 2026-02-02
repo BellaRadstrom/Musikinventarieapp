@@ -108,57 +108,92 @@ menu = st.sidebar.selectbox("Meny", ["🔍 Sök & Skanna", "➕ Ny registrering"
 
 # --- 7. SÖK & SKANNA ---
 if menu == "🔍 Sök & Skanna":
-    # Visa kvitto om ett lån precis gjorts
+    # 1. Visa kvitto om ett lån precis gjorts
     if st.session_state.last_loan:
         l = st.session_state.last_loan
-        rows = "".join([f"<li><b>{i['Modell']}</b> (ID: {i['Resurstagg']})</li>" for i in l['items']])
+        rows = "".join([f"<li><b>{i['Modell']}</b><br><small>ID: {i['Resurstagg']}</small></li>" for i in l['items']])
         st.components.v1.html(f"<div style='border:2px solid #333;padding:15px;background:white;font-family:sans-serif;'><h3>Lånekvitto: {l['name']}</h3><p>Datum: {l['date']}</p><hr><ul>{rows}</ul><button onclick='window.print()'>🖨️ SKRIV UT</button></div>", height=300)
         if st.button("Stäng kvitto"): st.session_state.last_loan = None; st.rerun()
 
-    # --- QR-SKANNER SEKTION ---
+    # 2. QR-SKANNER (Inställning för att direkt uppdatera sökfältet)
     with st.expander("📷 Starta QR-skanner", expanded=False):
-        cam_image = st.camera_input("Rikta kameran mot produktens QR-kod")
+        # Vi lägger till en unik nyckel för att kunna återställa kameran om det behövs
+        cam_image = st.camera_input("Ta en bild på QR-koden för att skanna")
+        
         if cam_image:
             scanned_code = decode_qr(cam_image)
             if scanned_code:
                 st.success(f"Hittade ID: {scanned_code}")
-                st.session_state.search_query = scanned_code # Spara i session state
-                st.rerun() # Ladda om för att uppdatera sökfältet
+                # Viktigt: Uppdatera session_state direkt
+                st.session_state.search_query = scanned_code
+                add_log(f"QR Skannad: {scanned_code}")
+                # Tvinga omladdning så att sökfältet fångar upp värdet direkt
+                st.rerun()
             else:
-                st.warning("Ingen QR-kod hittades i bilden. Försök igen.")
+                st.error("Kunde inte läsa QR-koden. Försök hålla kameran närmare eller stabilare.")
 
-    # --- SÖKFÄLT ---
-    # Vi använder session_state för att styra värdet i sökfältet
-    q = st.text_input("Sök (Modell, ID, Färg...)", value=st.session_state.search_query)
+    # 3. SÖKFÄLT (Styrs av session_state)
+    # Vi använder en callback eller direkt tilldelning för att synka manuell sökning och skanning
+    search_val = st.text_input("Sök (Modell, ID, Färg...)", 
+                               value=st.session_state.get('search_query', ""),
+                               key="search_input")
     
-    # Om användaren skriver manuellt, uppdatera session_state
-    if q != st.session_state.search_query:
-        st.session_state.search_query = q
+    # Uppdatera session_state om användaren skriver manuellt
+    st.session_state.search_query = search_val
 
-    # Filtrering
+    # 4. SÖKLOGIK OCH RESULTAT
     if st.session_state.search_query:
-        results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(st.session_state.search_query, case=False)).any(axis=1)]
+        q = st.session_state.search_query
+        # Sök i alla kolumner
+        results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(q, case=False)).any(axis=1)]
+        
+        if results.empty:
+            st.warning(f"⚠️ Inga produkter hittades som matchar '{q}'.")
+            # Knapp för att rensa sökning
+            if st.button("Rensa sökning"):
+                st.session_state.search_query = ""
+                st.rerun()
+        else:
+            st.info(f"Hittade {len(results)} matchningar.")
     else:
         results = st.session_state.df
 
-    # Visa resultat
+    # 5. RENDERA RESULTATKORT
     for idx, row in results.iterrows():
         with st.container(border=True):
             c1, c2, c3 = st.columns([1, 2, 1])
             with c1:
-                if row['Enhetsfoto']: st.image(row['Enhetsfoto'], width=100)
+                if row['Enhetsfoto']: 
+                    st.image(row['Enhetsfoto'], width=100)
+                else:
+                    st.caption("Ingen bild")
+                # QR-kod för etikett-referens
                 st.image(f"data:image/png;base64,{get_qr_b64(row['Resurstagg'])}", width=60)
+            
             with c2:
                 st.subheader(row['Modell'])
-                st.write(f"ID: {row['Resurstagg']} | Status: {row['Status']}")
-                if row['Status'] == 'Utlånad': st.error(f"Låntagare: {row['Aktuell ägare']}")
-            with c3:
-                if row['Status'] == 'Tillgänglig':
-                    if st.button("🛒 Lägg till", key=f"a{idx}"):
-                        st.session_state.cart.append(row.to_dict()); st.rerun()
-                if is_admin:
-                    if st.button("✏️ Edit", key=f"e{idx}"):
-                        st.session_state.edit_idx = idx; st.rerun()
+                st.write(f"**ID:** {row['Resurstagg']}")
+                st.write(f"**Typ:** {row['Typ']} | **Färg:** {row['Färg']}")
+                
+                # Status-indikator
+                status = row['Status']
+                if status == 'Tillgänglig':
+                    st.markdown(f"🟢 **Status:** {status}")
+                elif status == 'Utlånad':
+                    st.markdown(f"🔴 **Status:** {status} till **{row['Aktuell ägare']}**")
+                    st.caption(f"Utlånat: {row['Utlåningsdatum']}")
+                else:
+                    st.markdown(f"🟡 **Status:** {status}")
 
-# --- (Resten av koden bibehålls enligt din förlaga) ---
-# ... [Ny registrering, Återlämning, Admin & Inventering fortsätter här]
+            with c3:
+                # Knappar baserat på status
+                if row['Status'] == 'Tillgänglig':
+                    if st.button("🛒 Lägg i varukorg", key=f"add_{idx}"):
+                        st.session_state.cart.append(row.to_dict())
+                        st.toast(f"{row['Modell']} tillagd!")
+                        st.rerun()
+                
+                if is_admin:
+                    if st.button("✏️ Editera", key=f"edit_{idx}"):
+                        st.session_state.edit_idx = idx
+                        st.rerun()
