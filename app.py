@@ -7,14 +7,13 @@ from io import BytesIO
 from PIL import Image
 import base64
 import random
-import cv2  # Kräver opencv-python-headless
+import cv2
 import numpy as np
 
 # --- 1. SETUP ---
 st.set_page_config(page_title="Musik-IT Birka v13", layout="wide")
 
-# Session states
-# Vi lägger till 'search_query' för att hålla reda på vad som skannats/skrivits
+# Session states - Lagt till 'search_query'
 for key in ['cart', 'edit_idx', 'debug_log', 'last_loan', 'search_query']:
     if key not in st.session_state:
         st.session_state[key] = [] if key in ['cart', 'debug_log'] else ""
@@ -69,14 +68,15 @@ def get_qr_b64(data):
     return base64.b64encode(buf.getvalue()).decode()
 
 def decode_qr(image_file):
-    """Extraherar text från en QR-kod i en bild."""
+    """Avkodar QR-kod från Streamlits kamerabild."""
     try:
         file_bytes = np.asarray(bytearray(image_file.read()), dtype=np.uint8)
         opencv_image = cv2.imdecode(file_bytes, 1)
         detector = cv2.QRCodeDetector()
         data, points, _ = detector.detectAndDecode(opencv_image)
         return data
-    except:
+    except Exception as e:
+        add_log(f"QR Scan Error: {e}")
         return ""
 
 # --- 4. ADMIN STATUS BANNER ---
@@ -117,53 +117,55 @@ if menu == "🔍 Sök & Skanna":
         st.components.v1.html(f"<div style='border:2px solid #333;padding:15px;background:white;font-family:sans-serif;'><h3>Lånekvitto: {l['name']}</h3><p>Datum: {l['date']}</p><hr><ul>{rows}</ul><button onclick='window.print()'>🖨️ SKRIV UT</button></div>", height=300)
         if st.button("Stäng kvitto"): st.session_state.last_loan = None; st.rerun()
 
-    # --- QR-SKANNER SEKTION ---
+    # NYTT: QR-Skanner expander
     with st.expander("📷 Starta QR-skanner", expanded=False):
         cam_image = st.camera_input("Rikta kameran mot QR-koden")
         if cam_image:
-            scanned_result = decode_qr(cam_image)
-            if scanned_result:
-                st.session_state.search_query = scanned_result
-                st.success(f"Identifierade: {scanned_result}")
+            found_id = decode_qr(cam_image)
+            if found_id:
+                st.session_state.search_query = found_id
+                st.success(f"Identifierade ID: {found_id}")
                 st.rerun()
             else:
-                st.warning("Kunde inte läsa QR-koden. Försök igen.")
+                st.warning("Ingen QR-kod hittades. Prova att hålla koden närmare.")
 
-    # --- EDITERINGSLÄGE (ADMIN) ---
+    # FIX FÖR KEYERROR: Kontrollera att indexet fortfarande finns i df
     if is_admin and st.session_state.edit_idx is not None:
         idx = st.session_state.edit_idx
-        row = st.session_state.df.loc[idx]
-        with st.container(border=True):
-            st.subheader(f"🛠️ Editera: {row['Modell']}")
-            with st.form("edit_v13"):
-                c1, c2 = st.columns(2)
-                e_mod = c1.text_input("Modell", row['Modell'])
-                e_brand = c1.text_input("Tillverkare", row['Tillverkare'])
-                e_status = c2.selectbox("Status", ["Tillgänglig", "Service", "Trasig", "Utlånad"], index=0)
-                e_owner = c2.text_input("Ägare", row['Aktuell ägare'])
-                e_img_cam = st.camera_input("Uppdatera foto")
-                
-                b1, b2, b3 = st.columns(3)
-                if b1.form_submit_button("Spara"):
-                    df = get_data_force()
-                    df.loc[idx, ['Modell', 'Tillverkare', 'Status', 'Aktuell ägare']] = [e_mod, e_brand, e_status, e_owner]
-                    if e_img_cam: df.at[idx, 'Enhetsfoto'] = img_to_b64(e_img_cam)
-                    save_to_sheets(df); st.session_state.edit_idx = None; st.rerun()
-                if b2.form_submit_button("Radera 🗑️"):
-                    df = get_data_force(); df = df.drop(idx).reset_index(drop=True)
-                    save_to_sheets(df); st.session_state.edit_idx = None; st.rerun()
-                if b3.form_submit_button("Avbryt"): st.session_state.edit_idx = None; st.rerun()
+        if idx in st.session_state.df.index:
+            row = st.session_state.df.loc[idx]
+            with st.container(border=True):
+                st.subheader(f"🛠️ Editera: {row['Modell']}")
+                with st.form("edit_v13"):
+                    c1, c2 = st.columns(2)
+                    e_mod = c1.text_input("Modell", row['Modell'])
+                    e_brand = c1.text_input("Tillverkare", row['Tillverkare'])
+                    e_status = c2.selectbox("Status", ["Tillgänglig", "Service", "Trasig", "Utlånad"], index=0)
+                    e_owner = c2.text_input("Ägare", row['Aktuell ägare'])
+                    e_img_cam = st.camera_input("Uppdatera foto")
+                    
+                    b1, b2, b3 = st.columns(3)
+                    if b1.form_submit_button("Spara"):
+                        df = get_data_force()
+                        df.loc[idx, ['Modell', 'Tillverkare', 'Status', 'Aktuell ägare']] = [e_mod, e_brand, e_status, e_owner]
+                        if e_img_cam: df.at[idx, 'Enhetsfoto'] = img_to_b64(e_img_cam)
+                        save_to_sheets(df); st.session_state.edit_idx = None; st.rerun()
+                    if b2.form_submit_button("Radera 🗑️"):
+                        df = get_data_force(); df = df.drop(idx).reset_index(drop=True)
+                        save_to_sheets(df); st.session_state.edit_idx = None; st.rerun()
+                    if b3.form_submit_button("Avbryt"): st.session_state.edit_idx = None; st.rerun()
+        else:
+            st.session_state.edit_idx = None # Nollställ om indexet är borta
 
-    # --- SÖKFÄLT ---
-    # Vi använder session_state för att styra värdet i sökfältet
+    # SÖKFÄLT (Kopplat till search_query)
     q = st.text_input("Sök (Modell, ID, Färg...)", value=st.session_state.search_query)
-    st.session_state.search_query = q # Uppdatera state om man skriver för hand
+    st.session_state.search_query = q
 
-    # --- FILTRERING OCH RESULTAT ---
+    # SÖKRESULTAT
     if q:
         results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(q, case=False)).any(axis=1)]
         if results.empty:
-            st.warning(f"Inga resultat hittades för '{q}'.")
+            st.warning(f"Inga träffar för '{q}' i registret.")
     else:
         results = st.session_state.df
 
@@ -187,7 +189,7 @@ if menu == "🔍 Sök & Skanna":
 
 # --- 8. NY REGISTRERING ---
 elif menu == "➕ Ny registrering":
-    with st.form("new_v13", clear_on_submit=True):
+    with st.form("new_v12", clear_on_submit=True):
         st.subheader("Lägg till ny utrustning")
         c1, c2 = st.columns(2)
         f_mod = c1.text_input("Modell *")
