@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 # --- 1. SETUP ---
-st.set_page_config(page_title="Musik-IT Birka v15.2", layout="wide")
+st.set_page_config(page_title="Musik-IT Birka v15.3", layout="wide")
 
 # Session states
 for key in ['cart', 'edit_idx', 'debug_log', 'last_loan', 'search_query', 'gen_id']:
@@ -126,49 +126,58 @@ if menu == "🔍 Sök & Skanna":
             if scanned:
                 if scanned != st.session_state.search_query:
                     st.session_state.search_query = scanned
+                    st.session_state.edit_idx = None # Rensa editering vid ny sökning
                     st.toast(f"Hittade ID: {scanned}")
                     st.rerun()
 
-    # Edit-logik (v12)
+    # --- BUGFIX: Säkerställ att index existerar i df ---
     if is_admin and st.session_state.edit_idx is not None:
         idx = st.session_state.edit_idx
-        row = st.session_state.df.loc[idx]
-        with st.container(border=True):
-            st.subheader(f"🛠️ Editera: {row['Modell']}")
-            with st.form("edit_v15_2"):
-                c1, c2 = st.columns(2)
-                e_mod = c1.text_input("Modell", row['Modell'])
-                e_brand = c1.text_input("Tillverkare", row['Tillverkare'])
-                e_status = c2.selectbox("Status", ["Tillgänglig", "Service", "Trasig", "Utlånad"], index=0)
-                e_owner = c2.text_input("Ägare", row['Aktuell ägare'])
-                e_img_cam = st.camera_input("Uppdatera foto", key="edit_cam")
-                
-                b1, b2, b3 = st.columns(3)
-                if b1.form_submit_button("Spara"):
-                    df = get_data_force()
-                    df.loc[idx, ['Modell', 'Tillverkare', 'Status', 'Aktuell ägare']] = [e_mod, e_brand, e_status, e_owner]
-                    if e_img_cam: df.at[idx, 'Enhetsfoto'] = img_to_b64(e_img_cam)
-                    if save_to_sheets(df):
-                        st.success("Ändringar sparade!")
-                        st.session_state.edit_idx = None
-                        st.rerun()
-                if b2.form_submit_button("Radera 🗑️"):
-                    df = get_data_force(); df = df.drop(idx).reset_index(drop=True)
-                    if save_to_sheets(df):
-                        st.session_state.edit_idx = None
-                        st.rerun()
-                if b3.form_submit_button("Avbryt"): st.session_state.edit_idx = None; st.rerun()
+        if idx in st.session_state.df.index: # Kontrollera att raden finns kvar
+            row = st.session_state.df.loc[idx]
+            with st.container(border=True):
+                st.subheader(f"🛠️ Editera: {row['Modell']}")
+                with st.form("edit_v15_3"):
+                    c1, c2 = st.columns(2)
+                    e_mod = c1.text_input("Modell", row['Modell'])
+                    e_brand = c1.text_input("Tillverkare", row['Tillverkare'])
+                    e_status = c2.selectbox("Status", ["Tillgänglig", "Service", "Trasig", "Utlånad"], index=0)
+                    e_owner = c2.text_input("Ägare", row['Aktuell ägare'])
+                    e_img_cam = st.camera_input("Uppdatera foto", key="edit_cam")
+                    
+                    b1, b2, b3 = st.columns(3)
+                    if b1.form_submit_button("Spara"):
+                        df = get_data_force()
+                        df.loc[idx, ['Modell', 'Tillverkare', 'Status', 'Aktuell ägare']] = [e_mod, e_brand, e_status, e_owner]
+                        if e_img_cam: df.at[idx, 'Enhetsfoto'] = img_to_b64(e_img_cam)
+                        if save_to_sheets(df):
+                            st.success("Ändringar sparade!")
+                            st.session_state.edit_idx = None
+                            st.rerun()
+                    if b2.form_submit_button("Radera 🗑️"):
+                        df = get_data_force()
+                        df = df.drop(idx).reset_index(drop=True)
+                        if save_to_sheets(df):
+                            st.session_state.edit_idx = None
+                            st.rerun()
+                    if b3.form_submit_button("Avbryt"): st.session_state.edit_idx = None; st.rerun()
+        else:
+            st.session_state.edit_idx = None # Återställ om indexet är ogiltigt
 
     q_input = st.text_input("Sök (Modell, ID, Färg...)", value=st.session_state.search_query)
     if q_input != st.session_state.search_query:
         st.session_state.search_query = q_input
+        st.session_state.edit_idx = None # Rensa editering vid manuell sökning
     
     if st.session_state.search_query:
         if st.button("❌ Rensa sökning"):
             st.session_state.search_query = ""
+            st.session_state.edit_idx = None
             st.rerun()
 
-    results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(st.session_state.search_query, case=False)).any(axis=1)] if st.session_state.search_query else st.session_state.df
+    # Filtrering
+    q = st.session_state.search_query
+    results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(q, case=False)).any(axis=1)] if q else st.session_state.df
 
     for idx, row in results.iterrows():
         with st.container(border=True):
@@ -189,28 +198,21 @@ if menu == "🔍 Sök & Skanna":
                     if st.button("✏️ Edit", key=f"e{idx}"):
                         st.session_state.edit_idx = idx; st.rerun()
 
-# --- 8. NY REGISTRERING (FÖRBÄTTRAD ID-LOGIK) ---
+# --- 8. NY REGISTRERING ---
 elif menu == "➕ Ny registrering":
     st.subheader("Registrera ny utrustning")
-    
-    # Knapp för att generera ID placeras UTANFÖR formen för att kunna uppdatera fälten direkt
     if st.button("🔄 Generera ID & Streckkod"):
         st.session_state.gen_id = generate_id()
         st.rerun()
 
-    with st.form("new_v15_2", clear_on_submit=True):
+    with st.form("new_v15_3", clear_on_submit=True):
         c1, c2 = st.columns(2)
         f_mod = c1.text_input("Modell *")
         f_brand = c1.text_input("Tillverkare")
         f_typ = c1.selectbox("Typ av produkt", ["Instrument", "PA", "Mikrofoner", "Övrigt"])
         f_farg = c1.text_input("Färg")
-        
-        # Resurstagg tar värdet från gen_id
         f_tag = c2.text_input("Resurstagg (ID) *", value=st.session_state.gen_id)
-        
-        # Streckkod tar värdet från gen_id om det fältet är tomt
         f_bc = c2.text_input("Streckkod", value=st.session_state.gen_id)
-        
         f_status = c2.selectbox("Status", ["Tillgänglig", "Service", "Reserv"])
         f_foto = st.camera_input("Ta foto", key="new_reg_cam")
         
@@ -226,7 +228,7 @@ elif menu == "➕ Ny registrering":
                 }
                 if save_to_sheets(pd.concat([df_current, pd.DataFrame([new_row])], ignore_index=True)):
                     st.success(f"{f_mod} har sparats!")
-                    st.session_state.gen_id = "" # Nollställ efter lyckat sparande
+                    st.session_state.gen_id = ""
                 else:
                     st.error("Kunde inte spara.")
             else:
@@ -260,7 +262,6 @@ elif menu == "⚙️ Admin & Inventering":
             st.session_state.df = get_data_force()
             st.success("Synkad!")
             st.rerun()
-            
         t1, t2, t3 = st.tabs(["📋 Inventering", "🖨️ Bulk QR", "📜 Logg"])
         with t1:
             st.dataframe(st.session_state.df[['Modell', 'Resurstagg', 'Status', 'Aktuell ägare']])
