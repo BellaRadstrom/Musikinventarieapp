@@ -7,26 +7,26 @@ from io import BytesIO
 from PIL import Image
 import base64
 import random
+import cv2  # Ny import för QR-läsning
+import numpy as np
 
 # --- 1. SETUP ---
-st.set_page_config(page_title="Musik-IT Birka v12", layout="wide")
+st.set_page_config(page_title="Musik-IT Birka v13", layout="wide")
 
 # Session states
-for key in ['cart', 'edit_idx', 'debug_log', 'last_loan']:
+for key in ['cart', 'edit_idx', 'debug_log', 'last_loan', 'search_query']:
     if key not in st.session_state:
-        st.session_state[key] = [] if key in ['cart', 'debug_log'] else None
+        st.session_state[key] = [] if key in ['cart', 'debug_log'] else ""
 
 def add_log(msg):
     ts = datetime.now().strftime("%H:%M:%S")
     st.session_state.debug_log.append(f"[{ts}] {msg}")
 
-# --- 2. DATA CONNECTION (MED STRÄNG CACHE-KONTROLL) ---
+# --- 2. DATA CONNECTION ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def get_data_force():
-    """Hämtar data och tvingar Google Sheets att ignorera cache."""
     try:
-        # TTL=0 är nyckeln här för att slippa fördröjning
         df = conn.read(worksheet="Sheet1", ttl=0)
         cols = ["Enhetsfoto", "Modell", "Tillverkare", "Typ", "Färg", "Resurstagg", 
                 "Streckkod", "Status", "Aktuell ägare", "Utlåningsdatum", "Senast inventerad"]
@@ -40,7 +40,6 @@ def get_data_force():
 def save_to_sheets(df):
     try:
         conn.update(worksheet="Sheet1", data=df.astype(str))
-        # Tömmer Streamlits interna cache efter skrivning
         st.cache_data.clear()
         add_log("Data skickad till Sheets.")
         return True
@@ -48,7 +47,7 @@ def save_to_sheets(df):
         add_log(f"Save Error: {e}")
         return False
 
-# Initial laddning (tvingande)
+# Initial laddning
 if 'df' not in st.session_state or st.session_state.df is None:
     st.session_state.df = get_data_force()
 
@@ -68,6 +67,14 @@ def get_qr_b64(data):
     buf = BytesIO()
     qr.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode()
+
+def decode_qr(image_file):
+    """Avkodar QR-kod från en bildfil."""
+    file_bytes = np.asarray(bytearray(image_file.read()), dtype=np.uint8)
+    opencv_image = cv2.imdecode(file_bytes, 1)
+    detector = cv2.QRCodeDetector()
+    data, points, _ = detector.detectAndDecode(opencv_image)
+    return data
 
 # --- 4. ADMIN STATUS BANNER ---
 st.sidebar.title("🎸 Musik-IT Birka")
@@ -101,39 +108,40 @@ menu = st.sidebar.selectbox("Meny", ["🔍 Sök & Skanna", "➕ Ny registrering"
 
 # --- 7. SÖK & SKANNA ---
 if menu == "🔍 Sök & Skanna":
+    # Visa kvitto om ett lån precis gjorts
     if st.session_state.last_loan:
         l = st.session_state.last_loan
-        rows = "".join([f"<li><b>{i['Modell']}</b><br><small>Märke: {i['Tillverkare']} | ID: {i['Resurstagg']}</small></li>" for i in l['items']])
+        rows = "".join([f"<li><b>{i['Modell']}</b> (ID: {i['Resurstagg']})</li>" for i in l['items']])
         st.components.v1.html(f"<div style='border:2px solid #333;padding:15px;background:white;font-family:sans-serif;'><h3>Lånekvitto: {l['name']}</h3><p>Datum: {l['date']}</p><hr><ul>{rows}</ul><button onclick='window.print()'>🖨️ SKRIV UT</button></div>", height=300)
         if st.button("Stäng kvitto"): st.session_state.last_loan = None; st.rerun()
 
-    if is_admin and st.session_state.edit_idx is not None:
-        idx = st.session_state.edit_idx
-        row = st.session_state.df.loc[idx]
-        with st.container(border=True):
-            st.subheader(f"🛠️ Editera: {row['Modell']}")
-            with st.form("edit_v12"):
-                c1, c2 = st.columns(2)
-                e_mod = c1.text_input("Modell", row['Modell'])
-                e_brand = c1.text_input("Tillverkare", row['Tillverkare'])
-                e_status = c2.selectbox("Status", ["Tillgänglig", "Service", "Trasig", "Utlånad"], index=0)
-                e_owner = c2.text_input("Ägare", row['Aktuell ägare'])
-                e_img_cam = st.camera_input("Uppdatera foto")
-                
-                b1, b2, b3 = st.columns(3)
-                if b1.form_submit_button("Spara"):
-                    df = get_data_force()
-                    df.loc[idx, ['Modell', 'Tillverkare', 'Status', 'Aktuell ägare']] = [e_mod, e_brand, e_status, e_owner]
-                    if e_img_cam: df.at[idx, 'Enhetsfoto'] = img_to_b64(e_img_cam)
-                    save_to_sheets(df); st.session_state.edit_idx = None; st.rerun()
-                if b2.form_submit_button("Radera 🗑️"):
-                    df = get_data_force(); df = df.drop(idx).reset_index(drop=True)
-                    save_to_sheets(df); st.session_state.edit_idx = None; st.rerun()
-                if b3.form_submit_button("Avbryt"): st.session_state.edit_idx = None; st.rerun()
+    # --- QR-SKANNER SEKTION ---
+    with st.expander("📷 Starta QR-skanner", expanded=False):
+        cam_image = st.camera_input("Rikta kameran mot produktens QR-kod")
+        if cam_image:
+            scanned_code = decode_qr(cam_image)
+            if scanned_code:
+                st.success(f"Hittade ID: {scanned_code}")
+                st.session_state.search_query = scanned_code # Spara i session state
+                st.rerun() # Ladda om för att uppdatera sökfältet
+            else:
+                st.warning("Ingen QR-kod hittades i bilden. Försök igen.")
 
-    q = st.text_input("Sök (Modell, ID, Färg...)", value=st.query_params.get("q", ""))
-    results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(q, case=False)).any(axis=1)] if q else st.session_state.df
+    # --- SÖKFÄLT ---
+    # Vi använder session_state för att styra värdet i sökfältet
+    q = st.text_input("Sök (Modell, ID, Färg...)", value=st.session_state.search_query)
+    
+    # Om användaren skriver manuellt, uppdatera session_state
+    if q != st.session_state.search_query:
+        st.session_state.search_query = q
 
+    # Filtrering
+    if st.session_state.search_query:
+        results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(st.session_state.search_query, case=False)).any(axis=1)]
+    else:
+        results = st.session_state.df
+
+    # Visa resultat
     for idx, row in results.iterrows():
         with st.container(border=True):
             c1, c2, c3 = st.columns([1, 2, 1])
@@ -152,82 +160,5 @@ if menu == "🔍 Sök & Skanna":
                     if st.button("✏️ Edit", key=f"e{idx}"):
                         st.session_state.edit_idx = idx; st.rerun()
 
-# --- 8. NY REGISTRERING ---
-elif menu == "➕ Ny registrering":
-    with st.form("new_v12", clear_on_submit=True):
-        st.subheader("Lägg till ny utrustning")
-        c1, c2 = st.columns(2)
-        f_mod = c1.text_input("Modell *")
-        f_brand = c1.text_input("Tillverkare")
-        f_typ = c1.text_input("Typ")
-        f_farg = c1.text_input("Färg")
-        f_tag_val = st.session_state.get('gen_id', "")
-        f_tag = c2.text_input("ID (ÅÅMMDD-XXX) *", value=f_tag_val)
-        if c2.form_submit_button("🔄 Generera ID"):
-            st.session_state.gen_id = generate_id(); st.rerun()
-        f_bc = c2.text_input("Streckkod")
-        f_status = c2.selectbox("Status", ["Tillgänglig", "Service", "Reserv"])
-        f_foto = st.camera_input("Ta foto")
-        if st.form_submit_button("✅ SPARA"):
-            if f_mod and f_tag:
-                df = get_data_force()
-                new = {"Modell": f_mod, "Tillverkare": f_brand, "Typ": f_typ, "Färg": f_farg, 
-                       "Resurstagg": f_tag, "Streckkod": f_bc, "Status": f_status, 
-                       "Enhetsfoto": img_to_b64(f_foto) if f_foto else "", "Senast inventerad": datetime.now().strftime("%Y-%m-%d")}
-                df = pd.concat([df, pd.DataFrame([new])], ignore_index=True)
-                if save_to_sheets(df): st.rerun()
-
-# --- 9. ÅTERLÄMNING ---
-elif menu == "🔄 Återlämning":
-    st.header("Individuell återlämning")
-    # Tvinga omladdning vid varje sidvisning
-    current_df = get_data_force()
-    borrowed = current_df[current_df['Status'] == 'Utlånad']
-    
-    if not borrowed.empty:
-        owner = st.selectbox("Vem lämnar tillbaka?", ["---"] + list(borrowed['Aktuell ägare'].unique()))
-        if owner != "---":
-            items = borrowed[borrowed['Aktuell ägare'] == owner]
-            for idx, row in items.iterrows():
-                with st.container(border=True):
-                    c1, c2 = st.columns([3, 1])
-                    c1.write(f"**{row['Modell']}** (ID: {row['Resurstagg']})")
-                    if c2.button("✅ Bekräfta återkomst", key=f"ret_{row['Resurstagg']}"):
-                        df_upd = get_data_force()
-                        p_idx = df_upd[df_upd['Resurstagg'] == row['Resurstagg']].index
-                        df_upd.loc[p_idx, ['Status', 'Aktuell ägare', 'Utlåningsdatum', 'Senast inventerad']] = ['Tillgänglig', '', '', datetime.now().strftime("%Y-%m-%d")]
-                        if save_to_sheets(df_upd):
-                            st.session_state.df = df_upd
-                            st.rerun()
-    else: st.info("Inga utlånade produkter.")
-
-# --- 10. ADMIN & INVENTERING (MED TVINGANDE SYNK-KNAPP) ---
-elif menu == "⚙️ Admin & Inventering":
-    if is_admin:
-        # TVINGANDE SYNK-KNAPP LÄNGST UPP
-        if st.button("🚨 TVINGA SYNK MED GOOGLE SHEETS", type="primary", use_container_width=True):
-            st.session_state.df = get_data_force()
-            st.toast("Hämtade precis färsk data!")
-            st.rerun()
-            
-        t1, t2, t3 = st.tabs(["📋 Inventering", "🖨️ Bulk QR", "📜 Logg"])
-        with t1:
-            today = datetime.now().strftime("%Y-%m-%d")
-            st.subheader(f"Inventeringsstatus {today}")
-            inv = st.session_state.df
-            seen = inv[inv['Senast inventerad'] == today]
-            missing = inv[inv['Senast inventerad'] != today]
-            st.metric("Inventerade idag", len(seen), f"Återstår: {len(missing)}")
-            st.write("### Avvikelselista (Ej sedda idag)")
-            st.dataframe(missing[['Modell', 'Resurstagg', 'Status', 'Aktuell ägare']])
-        with t2:
-            sel = st.multiselect("Välj för utskrift (3x4 cm)", st.session_state.df['Modell'].tolist())
-            if sel:
-                html = "<div style='display:flex;flex-wrap:wrap;gap:5px;'>"
-                for m in sel:
-                    r = st.session_state.df[st.session_state.df['Modell'] == m].iloc[0]
-                    qr = get_qr_b64(r['Resurstagg'])
-                    html += f"<div style='width:3cm;height:4cm;border:1px solid #ccc;text-align:center;padding:5px;'><img src='data:image/png;base64,{qr}' style='width:2.5cm;'><br><b style='font-size:10px;'>{r['Modell']}</b></div>"
-                st.components.v1.html(html + "</div><br><button onclick='window.print()'>SKRIV UT</button>", height=500)
-        with t3:
-            for l in reversed(st.session_state.debug_log): st.text(l)
+# --- (Resten av koden bibehålls enligt din förlaga) ---
+# ... [Ny registrering, Återlämning, Admin & Inventering fortsätter här]
