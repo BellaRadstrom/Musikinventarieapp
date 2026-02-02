@@ -11,14 +11,13 @@ import cv2
 import numpy as np
 
 # --- 1. SETUP ---
-st.set_page_config(page_title="Musik-IT Birka v13.8", layout="wide")
+st.set_page_config(page_title="Musik-IT Birka v13.9", layout="wide")
 
-# Initiera session states (Säkerställ att alla nycklar finns)
+# Initiera session states
 if 'search_query' not in st.session_state: st.session_state.search_query = ""
 if 'cart' not in st.session_state: st.session_state.cart = []
 if 'debug_log' not in st.session_state: st.session_state.debug_log = []
 if 'edit_idx' not in st.session_state: st.session_state.edit_idx = None
-if 'last_loan' not in st.session_state: st.session_state.last_loan = None
 
 def add_log(msg):
     ts = datetime.now().strftime("%H:%M:%S")
@@ -61,52 +60,48 @@ def decode_qr_mobile(image_file):
         add_log(f"QR Scan Error: {e}")
         return ""
 
-# --- 4. NAVIGATION & ADMIN ---
+# --- 4. NAVIGATION & ADMIN (Med unika nycklar) ---
 st.sidebar.title("🎸 Musik-IT Birka")
-# Lagt till unik key för att slippa DuplicateID-felet
-pwd = st.sidebar.text_input("Admin lösenord", type="password", key="admin_pwd_field")
+
+# LÖSNING: Alla widgets i sidebar har nu en unik 'key'
+pwd = st.sidebar.text_input("Admin lösenord", type="password", key="sidebar_pwd")
 is_admin = (pwd == "Birka")
 
-menu = st.sidebar.selectbox("Meny", ["🔍 Sök & Skanna", "➕ Ny registrering", "🔄 Återlämning", "⚙️ Admin & Inventering"])
+menu = st.sidebar.selectbox(
+    "Meny", 
+    ["🔍 Sök & Skanna", "➕ Ny registrering", "🔄 Återlämning", "⚙️ Admin & Inventering"],
+    key="sidebar_menu"
+)
 
 # --- 5. SÖK & SKANNA ---
 if menu == "🔍 Sök & Skanna":
     
     # QR-Skanner
     with st.expander("📷 ÖPPNA QR-SKANNER", expanded=False):
-        # Unik key på camera_input hjälper till att nollställa den
-        cam_image = st.camera_input("Ta bild på QR-kod", key="qr_camera")
+        cam_image = st.camera_input("Ta bild på QR-kod", key="main_camera")
         if cam_image:
             scanned_code = decode_qr_mobile(cam_image)
             if scanned_code:
                 st.session_state.search_query = scanned_code
-                st.success(f"Hittade ID: {scanned_code} - Resultat visas nedan!")
-                # Vi skippar rerun här för att undvika kraschen du såg
+                st.success(f"Identifierad: {scanned_code}")
 
-    # Sökfält (Hämtar värde från session_state)
-    q_input = st.text_input("Sök (Modell, ID...)", value=st.session_state.search_query)
+    # Sökfält
+    q_input = st.text_input("Sök (Modell, ID...)", value=st.session_state.search_query, key="main_search_field")
     
-    # Uppdatera state om användaren skriver
     if q_input != st.session_state.search_query:
         st.session_state.search_query = q_input
 
-    # Rensa-knapp som fungerar
+    # Rensa-knapp
     if st.session_state.search_query:
-        if st.button("❌ Rensa sökning och stäng kamera"):
+        if st.button("❌ Rensa sökning", key="clear_search_btn"):
             st.session_state.search_query = ""
-            # Genom att köra rerun här när state är tömt nollställs allt
             st.rerun()
 
     # Filtrering
-    if st.session_state.search_query:
-        search_term = st.session_state.search_query.lower()
+    search_term = st.session_state.search_query.lower()
+    if search_term:
         results = st.session_state.df[st.session_state.df.astype(str).apply(
             lambda x: x.str.contains(search_term, case=False, na=False)).any(axis=1)]
-        
-        if results.empty:
-            st.warning(f"Ingen träff för '{search_term}'")
-        else:
-            st.info(f"Visar {len(results)} matchningar")
     else:
         results = st.session_state.df
 
@@ -122,16 +117,18 @@ if menu == "🔍 Sök & Skanna":
                 st.write(f"ID: {row['Resurstagg']} | Status: {row['Status']}")
             with c3:
                 if row['Status'] == 'Tillgänglig':
-                    if st.button("🛒 Lägg till", key=f"cart_{idx}"):
+                    if st.button("🛒 Lägg till", key=f"btn_cart_{idx}"):
                         st.session_state.cart.append(row.to_dict())
                         st.toast(f"{row['Modell']} tillagd!")
                 if is_admin:
-                    if st.button("✏️ Edit", key=f"edit_{idx}"):
+                    if st.button("✏️ Edit", key=f"btn_edit_{idx}"):
                         st.session_state.edit_idx = idx
                         st.rerun()
 
-# --- RESTERANDE DELAR (NY REG, ÅTERLÄMNING ETC) ---
-# (Behålls som i din fungerande v12 men med is_admin-skydd)
+# --- RESTERANDE MENYVAL (Exempel på Ny registrering) ---
+elif menu == "➕ Ny registrering":
+    st.subheader("Registrera ny enhet")
+    # ... din existerande kod för Ny registrering ...
 
 # --- 5. VARUKORG ---
 if st.session_state.cart:
@@ -294,5 +291,6 @@ elif menu == "⚙️ Admin & Inventering":
                 st.components.v1.html(html + "</div><br><button onclick='window.print()'>SKRIV UT</button>", height=500)
         with t3:
             for l in reversed(st.session_state.debug_log): st.text(l)
+
 
 
