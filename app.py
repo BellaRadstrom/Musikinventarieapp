@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 # --- 1. SETUP ---
-st.set_page_config(page_title="Musik-IT Birka v15.3", layout="wide")
+st.set_page_config(page_title="Musik-IT Birka v15.4", layout="wide")
 
 # Session states
 for key in ['cart', 'edit_idx', 'debug_log', 'last_loan', 'search_query', 'gen_id']:
@@ -56,11 +56,12 @@ def generate_id():
     return f"{datetime.now().strftime('%y%m%d')}-{random.randint(100, 999)}"
 
 def img_to_b64(file):
+    """iPad-optimerad bildkomprimering"""
     if not file: return ""
     img = Image.open(file).convert("RGB")
-    img.thumbnail((300, 300))
+    img.thumbnail((250, 250)) 
     buf = BytesIO()
-    img.save(buf, format="JPEG", quality=75)
+    img.save(buf, format="JPEG", quality=60, optimize=True)
     return f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode()}"
 
 def get_qr_b64(data):
@@ -126,18 +127,17 @@ if menu == "🔍 Sök & Skanna":
             if scanned:
                 if scanned != st.session_state.search_query:
                     st.session_state.search_query = scanned
-                    st.session_state.edit_idx = None # Rensa editering vid ny sökning
+                    st.session_state.edit_idx = None
                     st.toast(f"Hittade ID: {scanned}")
                     st.rerun()
 
-    # --- BUGFIX: Säkerställ att index existerar i df ---
     if is_admin and st.session_state.edit_idx is not None:
         idx = st.session_state.edit_idx
-        if idx in st.session_state.df.index: # Kontrollera att raden finns kvar
+        if idx in st.session_state.df.index:
             row = st.session_state.df.loc[idx]
             with st.container(border=True):
                 st.subheader(f"🛠️ Editera: {row['Modell']}")
-                with st.form("edit_v15_3"):
+                with st.form("edit_v15_4"):
                     c1, c2 = st.columns(2)
                     e_mod = c1.text_input("Modell", row['Modell'])
                     e_brand = c1.text_input("Tillverkare", row['Tillverkare'])
@@ -162,12 +162,12 @@ if menu == "🔍 Sök & Skanna":
                             st.rerun()
                     if b3.form_submit_button("Avbryt"): st.session_state.edit_idx = None; st.rerun()
         else:
-            st.session_state.edit_idx = None # Återställ om indexet är ogiltigt
+            st.session_state.edit_idx = None
 
     q_input = st.text_input("Sök (Modell, ID, Färg...)", value=st.session_state.search_query)
     if q_input != st.session_state.search_query:
         st.session_state.search_query = q_input
-        st.session_state.edit_idx = None # Rensa editering vid manuell sökning
+        st.session_state.edit_idx = None
     
     if st.session_state.search_query:
         if st.button("❌ Rensa sökning"):
@@ -175,19 +175,21 @@ if menu == "🔍 Sök & Skanna":
             st.session_state.edit_idx = None
             st.rerun()
 
-    # Filtrering
     q = st.session_state.search_query
     results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(q, case=False)).any(axis=1)] if q else st.session_state.df
 
-    for idx, row in results.iterrows():
+    # Visningsbegränsning för iPad-minne
+    max_visible = 20
+    for idx, row in results.head(max_visible).iterrows():
         with st.container(border=True):
             c1, c2, c3 = st.columns([1, 2, 1])
             with c1:
-                if row['Enhetsfoto']: st.image(row['Enhetsfoto'], width=100)
+                if row['Enhetsfoto']: st.image(row['Enhetsfoto'], width=120)
                 st.image(f"data:image/png;base64,{get_qr_b64(row['Resurstagg'])}", width=60)
             with c2:
                 st.subheader(row['Modell'])
                 st.write(f"ID: {row['Resurstagg']} | Status: {row['Status']}")
+                if row['Status'] == 'Utlånad': st.error(f"Låntagare: {row['Aktuell ägare']}")
             with c3:
                 if row['Status'] == 'Tillgänglig':
                     if st.button("🛒 Lägg till", key=f"a{idx}"):
@@ -197,6 +199,8 @@ if menu == "🔍 Sök & Skanna":
                 if is_admin:
                     if st.button("✏️ Edit", key=f"e{idx}"):
                         st.session_state.edit_idx = idx; st.rerun()
+    if len(results) > max_visible:
+        st.info(f"Visar de {max_visible} första träffarna. Förfina sökningen för att se mer.")
 
 # --- 8. NY REGISTRERING ---
 elif menu == "➕ Ny registrering":
@@ -205,7 +209,7 @@ elif menu == "➕ Ny registrering":
         st.session_state.gen_id = generate_id()
         st.rerun()
 
-    with st.form("new_v15_3", clear_on_submit=True):
+    with st.form("new_v15_4", clear_on_submit=True):
         c1, c2 = st.columns(2)
         f_mod = c1.text_input("Modell *")
         f_brand = c1.text_input("Tillverkare")
