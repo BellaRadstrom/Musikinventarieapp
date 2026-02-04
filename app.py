@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 # --- 1. SETUP ---
-st.set_page_config(page_title="Musik-IT Birka v15.9", layout="wide")
+st.set_page_config(page_title="Musik-IT Birka v16.0", layout="wide")
 
 # Session states
 for key in ['cart', 'edit_idx', 'debug_log', 'last_loan', 'search_query', 'gen_id', 'cam_active']:
@@ -28,7 +28,6 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 def get_data_force():
     try:
         df = conn.read(worksheet="Sheet1", ttl=0)
-        # Lagt till 'Notering' i kolumnlistan
         cols = ["Enhetsfoto", "Modell", "Tillverkare", "Typ", "Färg", "Resurstagg", 
                 "Streckkod", "Status", "Aktuell ägare", "Utlåningsdatum", "Senast inventerad", "Notering"]
         for c in cols:
@@ -117,8 +116,9 @@ menu = st.sidebar.selectbox("Meny", ["🔍 Sök & Skanna", "➕ Ny registrering"
 if menu == "🔍 Sök & Skanna":
     if st.session_state.last_loan:
         l = st.session_state.last_loan
-        rows = "".join([f"<li><b>{i['Modell']}</b><br><small>ID: {i['Resurstagg']}</small></li>" for i in l['items']])
-        st.components.v1.html(f"<div style='border:2px solid #333;padding:15px;background:white;'><h3>Lånekvitto: {l['name']}</h3><p>{l['date']}</p><hr><ul>{rows}</ul><button onclick='window.print()'>🖨️ SKRIV UT</button></div>", height=300)
+        # UPPDATERAT: Notering har lagts till i HTML-koden för kvittot
+        rows = "".join([f"<li><b>{i['Modell']}</b> (ID: {i['Resurstagg']}){f' <br><i>Notering: {i['Notering']}</i>' if i['Notering'] else ''}</li>" for i in l['items']])
+        st.components.v1.html(f"<div style='border:2px solid #333;padding:15px;background:white;font-family:sans-serif;'><h3>Lånekvitto: {l['name']}</h3><p>Datum: {l['date']}</p><hr><ul>{rows}</ul><button onclick='window.print()'>🖨️ SKRIV UT</button></div>", height=300)
         if st.button("Stäng kvitto"): st.session_state.last_loan = None; st.rerun()
 
     with st.expander("📷 QR-SKANNER", expanded=False):
@@ -144,17 +144,15 @@ if menu == "🔍 Sök & Skanna":
             row = st.session_state.df.loc[idx]
             with st.container(border=True):
                 st.subheader(f"🛠️ Editera: {row['Modell']}")
-                with st.form("edit_v15_9"):
+                with st.form("edit_v16_0"):
                     c1, c2 = st.columns(2)
                     e_mod = c1.text_input("Modell", row['Modell'])
                     e_brand = c1.text_input("Tillverkare", row['Tillverkare'])
                     e_status = c2.selectbox("Status", ["Tillgänglig", "Service", "Trasig", "Utlånad"], index=0)
                     e_owner = c2.text_input("Ägare", row['Aktuell ägare'])
-                    # Nytt noteringsfält i edit
                     e_note = st.text_area("Notering", row['Notering'])
                     
                     st.write("---")
-                    st.info("För att byta bild: Ta ett nytt foto nedan innan du trycker på Spara.")
                     new_edit_photo = st.camera_input("Uppdatera bild (Valfritt)", key="edit_photo_cam")
                     
                     b1, b2 = st.columns(2)
@@ -198,13 +196,12 @@ elif menu == "➕ Ny registrering":
     if st.button("🔄 Generera ID"):
         st.session_state.gen_id = generate_id(); st.rerun()
 
-    with st.form("new_v15_9", clear_on_submit=True):
+    with st.form("new_v16_0", clear_on_submit=True):
         c1, c2 = st.columns(2)
         f_mod = c1.text_input("Modell *")
         f_brand = c1.text_input("Tillverkare")
         f_tag = c2.text_input("ID *", value=st.session_state.gen_id)
         f_status = c2.selectbox("Status", ["Tillgänglig", "Service", "Reserv"])
-        # Nytt noteringsfält vid nyreg
         f_note = st.text_area("Notering (t.ex. serienummer eller skick)")
         
         if st.form_submit_button("✅ SPARA TILL DATABAS"):
@@ -246,7 +243,6 @@ elif menu == "⚙️ Admin & Inventering":
             st.session_state.df = get_data_force(); st.rerun()
         t1, t2, t3 = st.tabs(["📋 Inventering", "🖨️ Bulk QR", "📜 Logg"])
         with t1:
-            # Visar även notering i tabellen
             st.dataframe(st.session_state.df[['Modell', 'Resurstagg', 'Status', 'Aktuell ägare', 'Notering']])
         with t2:
             sel = st.multiselect("Utskrift", st.session_state.df['Modell'].tolist())
