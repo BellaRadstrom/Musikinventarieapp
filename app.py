@@ -11,9 +11,9 @@ import cv2
 import numpy as np
 
 # --- 1. SETUP ---
-st.set_page_config(page_title="Musik-IT Birka v16.1", layout="wide")
+st.set_page_config(page_title="Musik-IT Birka v16.2", layout="wide")
 
-# Session states - Lagt till inventory_session för att hålla koll på checklista
+# Session states
 for key in ['cart', 'edit_idx', 'debug_log', 'last_loan', 'search_query', 'gen_id', 'cam_active', 'inv_check']:
     if key not in st.session_state:
         if key == 'inv_check': st.session_state[key] = {}
@@ -144,17 +144,20 @@ if menu == "🔍 Sök & Skanna":
             row = st.session_state.df.loc[idx]
             with st.container(border=True):
                 st.subheader(f"🛠️ Editera: {row['Modell']}")
-                with st.form("edit_v16_1"):
+                with st.form("edit_v16_2"):
                     c1, c2 = st.columns(2)
                     e_mod = c1.text_input("Modell", row['Modell'])
                     e_brand = c1.text_input("Tillverkare", row['Tillverkare'])
+                    e_typ = c1.selectbox("Typ", ["Instrument", "PA", "Mikrofoner", "Kablage", "Ljus", "Övrigt"], index=0)
+                    e_color = c1.text_input("Färg", row['Färg'])
+                    
                     e_status = c2.selectbox("Status", ["Tillgänglig", "Service", "Trasig", "Utlånad"], index=0)
                     e_owner = c2.text_input("Ägare", row['Aktuell ägare'])
                     e_note = st.text_area("Notering", row['Notering'])
                     new_edit_photo = st.camera_input("Uppdatera bild (Valfritt)", key="edit_photo_cam")
                     if st.form_submit_button("Spara ändringar"):
                         df = get_data_force()
-                        df.loc[idx, ['Modell', 'Tillverkare', 'Status', 'Aktuell ägare', 'Notering']] = [e_mod, e_brand, e_status, e_owner, e_note]
+                        df.loc[idx, ['Modell', 'Tillverkare', 'Typ', 'Färg', 'Status', 'Aktuell ägare', 'Notering']] = [e_mod, e_brand, e_typ, e_color, e_status, e_owner, e_note]
                         if new_edit_photo: df.at[idx, 'Enhetsfoto'] = img_to_b64(new_edit_photo)
                         if save_to_sheets(df):
                             st.session_state.edit_idx = None
@@ -173,7 +176,7 @@ if menu == "🔍 Sök & Skanna":
                 st.image(f"data:image/png;base64,{get_qr_b64(row['Resurstagg'])}", width=70)
             with c2:
                 st.subheader(row['Modell'])
-                st.write(f"ID: {row['Resurstagg']} | Status: {row['Status']}")
+                st.write(f"ID: {row['Resurstagg']} | Status: {row['Status']} | Typ: {row['Typ']}")
                 if row['Notering']: st.caption(f"📝 {row['Notering']}")
             with c3:
                 if row['Status'] == 'Tillgänglig':
@@ -188,18 +191,40 @@ elif menu == "➕ Ny registrering":
     st.subheader("Registrera ny utrustning")
     if st.button("🔄 Generera ID"):
         st.session_state.gen_id = generate_id(); st.rerun()
-    with st.form("new_v16_1", clear_on_submit=True):
+    
+    with st.form("new_v16_2", clear_on_submit=True):
         c1, c2 = st.columns(2)
         f_mod = c1.text_input("Modell *")
-        f_tag = c2.text_input("ID *", value=st.session_state.gen_id)
-        f_status = c2.selectbox("Status", ["Tillgänglig", "Service", "Reserv"])
+        f_brand = c1.text_input("Tillverkare")
+        f_typ = c1.selectbox("Typ", ["Instrument", "PA", "Mikrofoner", "Kablage", "Ljus", "Övrigt"])
+        f_color = c1.text_input("Färg")
+        
+        f_tag = c2.text_input("Resurstagg (ID) *", value=st.session_state.gen_id)
+        f_bc = c2.text_input("Streckkod", value=st.session_state.gen_id)
+        f_status = c2.selectbox("Status", ["Tillgänglig", "Service", "Reserv", "Trasig"])
         f_note = st.text_area("Notering")
-        if st.form_submit_button("✅ SPARA"):
+        
+        if st.form_submit_button("✅ SPARA TILL DATABAS"):
             if f_mod and f_tag:
                 df_current = get_data_force()
-                new_row = {"Modell": f_mod, "Resurstagg": f_tag, "Status": f_status, "Notering": f_note, "Enhetsfoto": st.session_state.get('temp_img', ""), "Senast inventerad": datetime.now().strftime("%Y-%m-%d")}
+                new_row = {
+                    "Modell": f_mod, 
+                    "Tillverkare": f_brand, 
+                    "Typ": f_typ,
+                    "Färg": f_color,
+                    "Resurstagg": f_tag, 
+                    "Streckkod": f_bc,
+                    "Status": f_status, 
+                    "Notering": f_note, 
+                    "Enhetsfoto": st.session_state.get('temp_img', ""), 
+                    "Senast inventerad": datetime.now().strftime("%Y-%m-%d"),
+                    "Aktuell ägare": "",
+                    "Utlåningsdatum": ""
+                }
                 if save_to_sheets(pd.concat([df_current, pd.DataFrame([new_row])], ignore_index=True)):
-                    st.session_state.gen_id = ""; st.session_state.temp_img = ""; st.rerun()
+                    st.success("Sparad!"); st.session_state.gen_id = ""; st.session_state.temp_img = ""; st.rerun()
+            else:
+                st.warning("Vänligen fyll i Modell och Resurstagg!")
 
     if st.checkbox("📷 Ta foto"):
         f_foto = st.camera_input("Produktfoto")
@@ -226,46 +251,28 @@ elif menu == "⚙️ Admin & Inventering":
         
         with t1:
             st.subheader("Checklista för inventering")
-            st.info("Markera de produkter du fysiskt hittat. De som inte markeras hamnar på avvikelselistan.")
-            
             df_inv = st.session_state.df.copy()
-            # Endast relevanta statusar för fysisk kontroll
-            df_inv = df_inv[df_inv['Status'].isin(['Tillgänglig', 'Reserv', 'Service'])]
+            df_inv = df_inv[df_inv['Status'].isin(['Tillgänglig', 'Reserv', 'Service', 'Trasig'])]
             
             for idx, row in df_inv.iterrows():
                 c1, c2, c3 = st.columns([0.5, 3, 2])
-                # Checkbox för att markera som hittad
                 is_checked = c1.checkbox("", key=f"inv_{row['Resurstagg']}", value=st.session_state.inv_check.get(row['Resurstagg'], False))
                 if is_checked != st.session_state.inv_check.get(row['Resurstagg'], False):
                     st.session_state.inv_check[row['Resurstagg']] = is_checked
-                    # Uppdatera datum direkt i Sheets vid check
                     if is_checked:
                         temp_df = get_data_force()
                         t_idx = temp_df[temp_df['Resurstagg'] == row['Resurstagg']].index
                         temp_df.loc[t_idx, 'Senast inventerad'] = datetime.now().strftime("%Y-%m-%d")
                         save_to_sheets(temp_df)
-                
-                c2.write(f"**{row['Modell']}** (ID: {row['Resurstagg']})")
-                c3.write(f"Status: {row['Status']} | Senast sedd: {row['Senast inventerad']}")
+                c2.write(f"**{row['Modell']}** ({row['Resurstagg']})")
+                c3.write(f"Senast sedd: {row['Senast inventerad']}")
             
-            st.divider()
-            if st.button("🚩 GENERERA AVVIKELSELISTA (Saknade produkter)", type="primary"):
-                missing = []
-                for idx, row in df_inv.iterrows():
-                    if not st.session_state.inv_check.get(row['Resurstagg'], False):
-                        missing.append(row)
-                
+            if st.button("🚩 GENERERA AVVIKELSELISTA"):
+                missing = [row for idx, row in df_inv.iterrows() if not st.session_state.inv_check.get(row['Resurstagg'], False)]
                 if missing:
-                    st.error(f"Hittade {len(missing)} avvikelser!")
-                    m_rows = "".join([f"<li><b>{m['Modell']}</b> (ID: {m['Resurstagg']}) - Status: {m['Status']}</li>" for m in missing])
-                    st.components.v1.html(f"<div style='border:2px solid red;padding:15px;background:white;font-family:sans-serif;'><h2>⚠️ AVVIKELSELISTA</h2><p>Datum: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p><hr><ul>{m_rows}</ul><button onclick='window.print()'>🖨️ SKRIV UT LISTA</button></div>", height=400)
-                else:
-                    st.success("Allt i sin ordning! Inga saknade produkter hittades.")
-            
-            if st.button("🗑️ Nollställ inventering (Rensa checkar)"):
-                st.session_state.inv_check = {}
-                st.rerun()
-
+                    m_rows = "".join([f"<li><b>{m['Modell']}</b> ({m['Resurstagg']})</li>" for m in missing])
+                    st.components.v1.html(f"<div style='border:2px solid red;padding:15px;background:white;'><h2>⚠️ AVVIKELSE</h2><ul>{m_rows}</ul><button onclick='window.print()'>SKRIV UT</button></div>", height=400)
+        
         with t2:
             sel = st.multiselect("Utskrift", st.session_state.df['Modell'].tolist())
             if sel:
