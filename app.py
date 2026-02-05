@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 # --- 1. SETUP ---
-st.set_page_config(page_title="Musik-IT Birka v16.3", layout="wide")
+st.set_page_config(page_title="Musik-IT Birka v16.4", layout="wide")
 
 # Session states
 for key in ['cart', 'edit_idx', 'debug_log', 'last_loan', 'search_query', 'gen_id', 'cam_active', 'inv_check']:
@@ -30,7 +30,6 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 def get_data_force():
     try:
         df = conn.read(worksheet="Sheet1", ttl=0)
-        # Säkerställ att alla kolumner finns för att undvika KeyError
         cols = ["Enhetsfoto", "Modell", "Tillverkare", "Typ", "Färg", "Resurstagg", 
                 "Streckkod", "Status", "Aktuell ägare", "Utlåningsdatum", "Senast inventerad", "Notering"]
         for c in cols:
@@ -145,7 +144,7 @@ if menu == "🔍 Sök & Skanna":
             row = st.session_state.df.loc[idx]
             with st.container(border=True):
                 st.subheader(f"🛠️ Editera: {row['Modell']}")
-                with st.form("edit_v16_3"):
+                with st.form("edit_v16_4"):
                     c1, c2 = st.columns(2)
                     e_mod = c1.text_input("Modell", row['Modell'])
                     e_brand = c1.text_input("Tillverkare", row['Tillverkare'])
@@ -155,13 +154,30 @@ if menu == "🔍 Sök & Skanna":
                     e_owner = c2.text_input("Ägare", row['Aktuell ägare'])
                     e_note = st.text_area("Notering", row['Notering'])
                     new_edit_photo = st.camera_input("Uppdatera bild (Valfritt)", key="edit_photo_cam")
-                    if st.form_submit_button("Spara ändringar"):
+                    
+                    st.write("---")
+                    c_save, c_del = st.columns([3, 1])
+                    
+                    if c_save.form_submit_button("💾 Spara ändringar"):
                         df = get_data_force()
                         df.loc[idx, ['Modell', 'Tillverkare', 'Typ', 'Färg', 'Status', 'Aktuell ägare', 'Notering']] = [e_mod, e_brand, e_typ, e_color, e_status, e_owner, e_note]
                         if new_edit_photo: df.at[idx, 'Enhetsfoto'] = img_to_b64(new_edit_photo)
                         if save_to_sheets(df):
                             st.session_state.edit_idx = None
                             st.rerun()
+                    
+                    st.write("🗑️ **Radera produkt**")
+                    confirm_delete = st.checkbox("Jag bekräftar att jag vill radera denna produkt permanent")
+                    if st.form_submit_button("❌ RADERA PRODUKT", type="secondary") and confirm_delete:
+                        df = get_data_force()
+                        df = df.drop(idx).reset_index(drop=True)
+                        if save_to_sheets(df):
+                            add_log(f"Raderade: {e_mod}")
+                            st.session_state.edit_idx = None
+                            st.rerun()
+                    elif not confirm_delete:
+                        st.caption("Bocka i rutan ovan för att kunna radera.")
+                        
                     if st.form_submit_button("Avbryt"): st.session_state.edit_idx = None; st.rerun()
 
     q_input = st.text_input("Sök...", value=st.session_state.search_query)
@@ -191,8 +207,7 @@ elif menu == "➕ Ny registrering":
     st.subheader("Registrera ny utrustning")
     if st.button("🔄 Generera ID"):
         st.session_state.gen_id = generate_id(); st.rerun()
-    
-    with st.form("new_v16_3", clear_on_submit=True):
+    with st.form("new_v16_4", clear_on_submit=True):
         c1, c2 = st.columns(2)
         f_mod = c1.text_input("Modell *")
         f_brand = c1.text_input("Tillverkare")
@@ -202,7 +217,6 @@ elif menu == "➕ Ny registrering":
         f_bc = c2.text_input("Streckkod", value=st.session_state.gen_id)
         f_status = c2.selectbox("Status", ["Tillgänglig", "Service", "Reserv", "Trasig"])
         f_note = st.text_area("Notering")
-        
         if st.form_submit_button("✅ SPARA TILL DATABAS"):
             if f_mod and f_tag:
                 df_current = get_data_force()
@@ -217,15 +231,12 @@ elif menu == "➕ Ny registrering":
 # --- 9. ÅTERLÄMNING ---
 elif menu == "🔄 Återlämning":
     st.subheader("Återlämning av produkter")
-    df_return = get_data_force() # Hämta frisk data för att undvika KeyError
+    df_return = get_data_force()
     borrowed = df_return[df_return['Status'] == 'Utlånad']
-    
     if not borrowed.empty:
         owner = st.selectbox("Välj låntagare", ["---"] + list(borrowed['Aktuell ägare'].unique()))
         if owner != "---":
             items = borrowed[borrowed['Aktuell ägare'] == owner]
-            
-            # Knapp för att återlämna ALLA
             if st.button(f"🚨 Återlämna ALLA produkter för {owner}", type="primary"):
                 df_upd = get_data_force()
                 today = datetime.now().strftime("%Y-%m-%d")
@@ -236,9 +247,7 @@ elif menu == "🔄 Återlämning":
                     add_log(f"Massåterlämning: {owner}")
                     st.success(f"Alla produkter för {owner} har återlämnats!")
                     st.rerun()
-
             st.write("---")
-            st.write("Individuell återlämning:")
             for idx, row in items.iterrows():
                 with st.container(border=True):
                     c1, c2 = st.columns([3, 1])
@@ -247,11 +256,8 @@ elif menu == "🔄 Återlämning":
                         df_upd = get_data_force()
                         p_idx = df_upd[df_upd['Resurstagg'] == row['Resurstagg']].index
                         df_upd.loc[p_idx, ['Status', 'Aktuell ägare', 'Utlåningsdatum', 'Senast inventerad']] = ['Tillgänglig', '', '', datetime.now().strftime("%Y-%m-%d")]
-                        if save_to_sheets(df_upd): 
-                            add_log(f"Återlämning: {row['Modell']}")
-                            st.rerun()
-    else:
-        st.info("Inga produkter är för närvarande utlånade.")
+                        if save_to_sheets(df_upd): st.rerun()
+    else: st.info("Inga produkter är utlånade.")
 
 # --- 10. ADMIN & INVENTERING ---
 elif menu == "⚙️ Admin & Inventering":
