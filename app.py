@@ -19,7 +19,7 @@ try:
 except:
     ADMIN_PWD = "Birka"
 
-# Session states
+# Session states för att hålla reda på appens status under körning
 for key in ['cart', 'edit_idx', 'debug_log', 'last_loan', 'search_query', 'gen_id', 'cam_active', 'inv_check']:
     if key not in st.session_state:
         if key == 'inv_check': st.session_state[key] = {}
@@ -36,6 +36,7 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 def get_data_force():
     try:
         df = conn.read(worksheet="Sheet1", ttl=0)
+        # Säkerställ att alla kolumner finns för att undvika KeyError
         cols = ["Enhetsfoto", "Modell", "Tillverkare", "Typ", "Färg", "Resurstagg", 
                 "Streckkod", "Status", "Aktuell ägare", "Utlåningsdatum", "Senast inventerad", "Notering"]
         for c in cols:
@@ -53,13 +54,14 @@ def save_to_sheets(df):
         add_log("Data sparad till Sheets.")
         return True
     except Exception as e:
-        st.error(f"Kunde inte spara: {e}")
+        st.error(f"Kunde inte spara till Google Sheets: {e}")
         return False
 
+# Initial laddning av data
 if 'df' not in st.session_state or st.session_state.df is None:
     st.session_state.df = get_data_force()
 
-# --- 3. UTILITIES ---
+# --- 3. UTILITIES (QR, BILDER, ID) ---
 def generate_id(): 
     return f"{datetime.now().strftime('%y%m%d')}-{random.randint(100, 999)}"
 
@@ -88,7 +90,7 @@ def decode_qr_logic(image_file):
     except:
         return ""
 
-# --- 4. SIDEBAR & ADMIN ---
+# --- 4. SIDEBAR & ADMIN-LOGIN ---
 st.sidebar.title("🎸 Musik-IT Birka")
 pwd = st.sidebar.text_input("Admin lösenord", type="password", key="sidebar_pwd")
 is_admin = (pwd == ADMIN_PWD)
@@ -98,7 +100,7 @@ if is_admin:
 else:
     st.markdown("<div style='background:#28a745;padding:10px;border-radius:5px;text-align:center;color:white;font-weight:bold;'>🟢 ANVÄNDAR-LÄGE</div>", unsafe_allow_html=True)
 
-# --- 5. VARUKORG ---
+# --- 5. VARUKORG (UTLÅNING) ---
 if st.session_state.cart:
     with st.sidebar.expander("🛒 VARUKORG", expanded=True):
         for itm in st.session_state.cart: st.caption(f"• {itm['Modell']}")
@@ -116,7 +118,7 @@ if st.session_state.cart:
                     add_log(f"Utlåning till {borrower}")
                     st.rerun()
 
-# --- 6. MENY ---
+# --- 6. HUVUDMENY ---
 menu = st.sidebar.selectbox("Meny", ["🔍 Sök & Skanna", "➕ Ny registrering", "🔄 Återlämning", "⚙️ Admin & Inventering"])
 
 # --- 7. SÖK & SKANNA ---
@@ -144,13 +146,14 @@ if menu == "🔍 Sök & Skanna":
                     st.session_state.cam_active = False
                     st.rerun()
 
+    # Admin: Editera produkt
     if is_admin and st.session_state.edit_idx is not None:
         idx = st.session_state.edit_idx
         if idx in st.session_state.df.index:
             row = st.session_state.df.loc[idx]
             with st.container(border=True):
                 st.subheader(f"🛠️ Editera: {row['Modell']}")
-                with st.form("edit_v16_6"):
+                with st.form("edit_v16_6_form"):
                     c1, c2 = st.columns(2)
                     e_mod = c1.text_input("Modell", row['Modell'])
                     e_brand = c1.text_input("Tillverkare", row['Tillverkare'])
@@ -184,7 +187,7 @@ if menu == "🔍 Sök & Skanna":
                         
                     if st.form_submit_button("Avbryt"): st.session_state.edit_idx = None; st.rerun()
 
-    q_input = st.text_input("Sök...", value=st.session_state.search_query)
+    q_input = st.text_input("Sök efter modell, ID eller tillverkare...", value=st.session_state.search_query)
     st.session_state.search_query = q_input
     results = st.session_state.df[st.session_state.df.astype(str).apply(lambda x: x.str.contains(st.session_state.search_query, case=False)).any(axis=1)] if st.session_state.search_query else st.session_state.df
 
@@ -200,18 +203,18 @@ if menu == "🔍 Sök & Skanna":
                 if row['Notering']: st.caption(f"📝 {row['Notering']}")
             with c3:
                 if row['Status'] == 'Tillgänglig':
-                    if st.button("🛒 Lägg till", key=f"a{idx}"):
+                    if st.button("🛒 Lägg till lån", key=f"a{idx}"):
                         st.session_state.cart.append(row.to_dict()); st.rerun()
                 if is_admin:
-                    if st.button("✏️ Edit", key=f"e{idx}"):
+                    if st.button("✏️ Editera", key=f"e{idx}"):
                         st.session_state.edit_idx = idx; st.rerun()
 
 # --- 8. NY REGISTRERING ---
 elif menu == "➕ Ny registrering":
     st.subheader("Registrera ny utrustning")
-    if st.button("🔄 Generera ID"):
+    if st.button("🔄 Generera nytt ID"):
         st.session_state.gen_id = generate_id(); st.rerun()
-    with st.form("new_v16_6", clear_on_submit=True):
+    with st.form("new_v16_6_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
         f_mod = c1.text_input("Modell *")
         f_brand = c1.text_input("Tillverkare")
@@ -226,9 +229,9 @@ elif menu == "➕ Ny registrering":
                 df_current = get_data_force()
                 new_row = {"Modell": f_mod, "Tillverkare": f_brand, "Typ": f_typ, "Färg": f_color, "Resurstagg": f_tag, "Streckkod": f_bc, "Status": f_status, "Notering": f_note, "Enhetsfoto": st.session_state.get('temp_img', ""), "Senast inventerad": datetime.now().strftime("%Y-%m-%d"), "Aktuell ägare": "", "Utlåningsdatum": ""}
                 if save_to_sheets(pd.concat([df_current, pd.DataFrame([new_row])], ignore_index=True)):
-                    st.success("Sparad!"); st.session_state.gen_id = ""; st.session_state.temp_img = ""; st.rerun()
+                    st.success("Produkten är nu sparad!"); st.session_state.gen_id = ""; st.session_state.temp_img = ""; st.rerun()
 
-    if st.checkbox("📷 Ta foto"):
+    if st.checkbox("📷 Ta foto på produkten"):
         f_foto = st.camera_input("Produktfoto")
         if f_foto: st.session_state.temp_img = img_to_b64(f_foto); st.success("Bild redo!")
 
@@ -261,7 +264,7 @@ elif menu == "🔄 Återlämning":
                         p_idx = df_upd[df_upd['Resurstagg'] == row['Resurstagg']].index
                         df_upd.loc[p_idx, ['Status', 'Aktuell ägare', 'Utlåningsdatum', 'Senast inventerad']] = ['Tillgänglig', '', '', datetime.now().strftime("%Y-%m-%d")]
                         if save_to_sheets(df_upd): st.rerun()
-    else: st.info("Inga produkter är utlånade.")
+    else: st.info("Inga produkter är för närvarande utlånade.")
 
 # --- 10. ADMIN & INVENTERING ---
 elif menu == "⚙️ Admin & Inventering":
