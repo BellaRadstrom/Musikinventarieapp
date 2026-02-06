@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 # --- 1. SETUP ---
-st.set_page_config(page_title="Musik-IT Birka v16.3", layout="wide")
+st.set_page_config(page_title="Musik-IT Birka v16.7", layout="wide")
 
 # Session states
 for key in ['cart', 'edit_idx', 'debug_log', 'last_loan', 'search_query', 'gen_id', 'cam_active', 'inv_check']:
@@ -30,7 +30,6 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 def get_data_force():
     try:
         df = conn.read(worksheet="Sheet1", ttl=0)
-        # Säkerställ att alla kolumner finns för att undvika KeyError
         cols = ["Enhetsfoto", "Modell", "Tillverkare", "Typ", "Färg", "Resurstagg", 
                 "Streckkod", "Status", "Aktuell ägare", "Utlåningsdatum", "Senast inventerad", "Notering"]
         for c in cols:
@@ -145,7 +144,7 @@ if menu == "🔍 Sök & Skanna":
             row = st.session_state.df.loc[idx]
             with st.container(border=True):
                 st.subheader(f"🛠️ Editera: {row['Modell']}")
-                with st.form("edit_v16_3"):
+                with st.form("edit_v16_7"):
                     c1, c2 = st.columns(2)
                     e_mod = c1.text_input("Modell", row['Modell'])
                     e_brand = c1.text_input("Tillverkare", row['Tillverkare'])
@@ -192,7 +191,7 @@ elif menu == "➕ Ny registrering":
     if st.button("🔄 Generera ID"):
         st.session_state.gen_id = generate_id(); st.rerun()
     
-    with st.form("new_v16_3", clear_on_submit=True):
+    with st.form("new_v16_7", clear_on_submit=True):
         c1, c2 = st.columns(2)
         f_mod = c1.text_input("Modell *")
         f_brand = c1.text_input("Tillverkare")
@@ -217,7 +216,7 @@ elif menu == "➕ Ny registrering":
 # --- 9. ÅTERLÄMNING ---
 elif menu == "🔄 Återlämning":
     st.subheader("Återlämning av produkter")
-    df_return = get_data_force() # Hämta frisk data för att undvika KeyError
+    df_return = get_data_force() 
     borrowed = df_return[df_return['Status'] == 'Utlånad']
     
     if not borrowed.empty:
@@ -225,7 +224,6 @@ elif menu == "🔄 Återlämning":
         if owner != "---":
             items = borrowed[borrowed['Aktuell ägare'] == owner]
             
-            # Knapp för att återlämna ALLA
             if st.button(f"🚨 Återlämna ALLA produkter för {owner}", type="primary"):
                 df_upd = get_data_force()
                 today = datetime.now().strftime("%Y-%m-%d")
@@ -238,7 +236,6 @@ elif menu == "🔄 Återlämning":
                     st.rerun()
 
             st.write("---")
-            st.write("Individuell återlämning:")
             for idx, row in items.iterrows():
                 with st.container(border=True):
                     c1, c2 = st.columns([3, 1])
@@ -256,7 +253,8 @@ elif menu == "🔄 Återlämning":
 # --- 10. ADMIN & INVENTERING ---
 elif menu == "⚙️ Admin & Inventering":
     if is_admin:
-        t1, t2, t3 = st.tabs(["📋 Inventering", "🖨️ Bulk QR", "📜 Logg"])
+        t1, t2, t3, t4 = st.tabs(["📋 Inventering", "🖨️ Bulk QR", "📜 Lagerlistor", "📜 Logg"])
+        
         with t1:
             st.subheader("Checklista för inventering")
             df_inv = st.session_state.df.copy()
@@ -278,15 +276,51 @@ elif menu == "⚙️ Admin & Inventering":
                 if missing:
                     m_rows = "".join([f"<li><b>{m['Modell']}</b> ({m['Resurstagg']})</li>" for m in missing])
                     st.components.v1.html(f"<div style='border:2px solid red;padding:15px;background:white;'><h2>⚠️ AVVIKELSE</h2><ul>{m_rows}</ul><button onclick='window.print()'>SKRIV UT</button></div>", height=400)
+        
         with t2:
-            sel = st.multiselect("Utskrift", st.session_state.df['Modell'].tolist())
-            if sel:
-                html = "<div style='display:flex;flex-wrap:wrap;gap:10px;'>"
-                for m in sel:
-                    r = st.session_state.df[st.session_state.df['Modell'] == m].iloc[0]
-                    qr_img = get_qr_b64(r['Resurstagg'])
-                    html += f"<div style='width:3cm;text-align:center;border:1px solid #ccc;padding:5px;'><img src='data:image/png;base64,{qr_img}' style='width:2.5cm;'><br><small>{r['Modell']}</small></div>"
-                st.components.v1.html(html + "</div><br><button onclick='window.print()'>Print</button>", height=500)
-        with t3:
-            for l in reversed(st.session_state.debug_log): st.text(l)
+            st.subheader("Massutskrift av QR-koder")
+            filter_type = st.multiselect("Filtrera på Typ", options=list(st.session_state.df['Typ'].unique()))
+            
+            # Hämta produkter baserat på valda typer
+            if filter_type:
+                df_to_print = st.session_state.df[st.session_state.df['Typ'].isin(filter_type)]
+            else:
+                df_to_print = st.session_state.df
 
+            sel = st.multiselect("Välj specifika produkter (valfritt)", df_to_print['Modell'].tolist())
+            
+            if st.button("Generera QR-koder"):
+                final_list = df_to_print[df_to_print['Modell'].isin(sel)] if sel else df_to_print
+                if not final_list.empty:
+                    html = "<div style='display:flex;flex-wrap:wrap;gap:10px;'>"
+                    for _, r in final_list.iterrows():
+                        qr_img = get_qr_b64(r['Resurstagg'])
+                        html += f"<div style='width:3cm;text-align:center;border:1px solid #ccc;padding:5px;'><img src='data:image/png;base64,{qr_img}' style='width:2.5cm;'><br><small>{r['Modell']}</small></div>"
+                    st.components.v1.html(html + "</div><br><button onclick='window.print()'>Skriv ut</button>", height=500)
+
+        with t3:
+            st.subheader("Skapa fysisk inventeringslista")
+            c1, c2 = st.columns(2)
+            l_type = c1.selectbox("Välj Typ", ["Alla"] + list(st.session_state.df['Typ'].unique()))
+            l_stat = c2.multiselect("Inkludera Status", options=["Tillgänglig", "Utlånad", "Service", "Trasig", "Reserv"], default=["Tillgänglig", "Utlånad"])
+            
+            if st.button("Visa lagerlista"):
+                df_l = st.session_state.df.copy()
+                if l_type != "Alla": df_l = df_l[df_l['Typ'] == l_type]
+                df_l = df_l[df_l['Status'].isin(l_stat)]
+                
+                if not df_l.empty:
+                    table_html = "<table style='width:100%; border-collapse: collapse;'><thead><tr style='background-color: #f2f2f2;'><th style='border: 1px solid #ddd; padding: 8px;'>Modell (ID)</th><th style='border: 1px solid #ddd; padding: 8px;'>Status / Info</th><th style='border: 1px solid #ddd; padding: 8px;'>Kontroll</th></tr></thead><tbody>"
+                    for _, r in df_l.iterrows():
+                        info = f"<b>{r['Status']}</b>"
+                        if r['Status'] == 'Utlånad':
+                            info += f"<br><small>Lånad av: {r['Aktuell ägare']} ({r['Utlåningsdatum']})</small>"
+                        table_html += f"<tr><td style='border: 1px solid #ddd; padding: 8px;'>{r['Modell']}<br><small>{r['Resurstagg']}</small></td><td style='border: 1px solid #ddd; padding: 8px;'>{info}</td><td style='border: 1px solid #ddd; padding: 8px; width: 100px;'>[ ]</td></tr>"
+                    table_html += "</tbody></table>"
+                    
+                    st.components.v1.html(f"<h3>Lagerlista: {l_type}</h3>{table_html}<br><button onclick='window.print()'>Skriv ut lista</button>", height=600, scrolling=True)
+                else:
+                    st.warning("Inga produkter hittades med dessa filter.")
+
+        with t4:
+            for l in reversed(st.session_state.debug_log): st.text(l)
